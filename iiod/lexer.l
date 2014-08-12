@@ -128,6 +128,10 @@ CYCLIC|cyclic {
 	return CYCLIC;
 }
 
+REPEAT|repeat {
+	return REPEAT;
+}
+
 {WORD} {
 	yylval->word = strdup(yytext);
 	return WORD;

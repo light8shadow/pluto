@@ -16,7 +16,7 @@
 PREFIX ?= /usr
 
 VERSION_MAJOR = 0
-VERSION_MINOR = 1
+VERSION_MINOR = 2
 VERSION_GIT := $(shell git rev-parse --short HEAD)
 
 LIBNAME = libiio.so

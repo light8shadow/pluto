@@ -96,6 +96,7 @@ void yyset_out(FILE *out, yyscan_t scanner);
 %token DEBUG_ATTR
 %token IN_OUT
 %token CYCLIC
+%token REPEAT
 
 %token <word> WORD
 %token <dev> DEVICE
@@ -128,7 +129,7 @@ Line:
 		"\t\tGet the version of libiio in use\n"
 		"\tTIMEOUT <timeout_ms>\n"
 		"\t\tSet the timeout (in ms) for I/O operations\n"
-		"\tOPEN <device> <samples_count> <mask> [CYCLIC]\n"
+		"\tOPEN <device> <samples_count> <mask> [CYCLIC|REPEAT]\n"
 		"\t\tOpen the specified device with the given mask of channels\n"
 		"\tCLOSE <device>\n"
 		"\t\tClose the specified device\n"
@@ -181,7 +182,21 @@ Line:
 		char *nb = $5, *mask = $7;
 		struct parser_pdata *pdata = yyget_extra(scanner);
 		unsigned long samples_count = atol(nb);
-		int ret = open_dev(pdata, $3, samples_count, mask, true);
+		int ret = open_dev(pdata, $3, samples_count, mask,
+			IIO_BUFFER_MODE_CYCLIC);
+		free(nb);
+		free(mask);
+		if (ret < 0)
+			YYABORT;
+		else
+			YYACCEPT;
+	}
+	| OPEN SPACE DEVICE SPACE WORD SPACE WORD SPACE REPEAT END {
+		char *nb = $5, *mask = $7;
+		struct parser_pdata *pdata = yyget_extra(scanner);
+		unsigned long samples_count = atol(nb);
+		int ret = open_dev(pdata, $3, samples_count, mask,
+			IIO_BUFFER_MODE_REPEAT);
 		free(nb);
 		free(mask);
 		if (ret < 0)
@@ -193,7 +208,8 @@ Line:
 		char *nb = $5, *mask = $7;
 		struct parser_pdata *pdata = yyget_extra(scanner);
 		unsigned long samples_count = atol(nb);
-		int ret = open_dev(pdata, $3, samples_count, mask, false);
+		int ret = open_dev(pdata, $3, samples_count, mask,
+			IIO_BUFFER_MODE_CONTINUOUS);
 		free(nb);
 		free(mask);
 		if (ret < 0)

@@ -26,7 +26,7 @@
 
 #ifdef _MSC_BUILD
 #define LIBIIO_VERSION_MAJOR 0
-#define LIBIIO_VERSION_MINOR 1
+#define LIBIIO_VERSION_MINOR 2
 #define LIBIIO_VERSION_GIT "git"
 #endif
 
@@ -65,7 +65,7 @@ struct iio_backend_ops {
 	ssize_t (*write)(const struct iio_device *dev,
 			const void *src, size_t len);
 	int (*open)(const struct iio_device *dev, size_t samples_count,
-			uint32_t *mask, size_t words, bool cyclic);
+			uint32_t *mask, size_t words, enum iio_buffer_mode mode);
 	int (*close)(const struct iio_device *dev);
 
 	ssize_t (*get_buffer)(const struct iio_device *dev,
@@ -172,7 +172,7 @@ char *iio_context_create_xml(const struct iio_context *ctx);
 void iio_context_init(struct iio_context *ctx);
 
 int iio_device_open(const struct iio_device *dev,
-		size_t samples_count, bool cyclic);
+		size_t samples_count, enum iio_buffer_mode mode);
 int iio_device_close(const struct iio_device *dev);
 ssize_t iio_device_read_raw(const struct iio_device *dev,
 		void *dst, size_t len, uint32_t *mask, size_t words);

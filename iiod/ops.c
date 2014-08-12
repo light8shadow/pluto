@@ -52,7 +52,7 @@ struct DevEntry {
 	struct iio_buffer *buf;
 	unsigned int sample_size, nb_clients;
 	bool update_mask;
-	bool cyclic;
+	enum iio_buffer_mode mode;
 
 	/* Linked list of ThdEntry structures corresponding
 	 * to all the threads who opened the device */
@@ -319,7 +319,7 @@ static void * rw_thd(void *d)
 			}
 
 			entry->buf = iio_device_create_buffer(dev,
-					samples_count, entry->cyclic);
+					samples_count, entry->mode);
 			if (!entry->buf) {
 				ret = -errno;
 				ERROR("Unable to create buffer\n");
@@ -588,7 +588,7 @@ static uint32_t *get_mask(const char *mask, size_t *len)
 }
 
 static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
-		size_t samples_count, const char *mask, bool cyclic)
+		size_t samples_count, const char *mask, enum iio_buffer_mode mode)
 {
 	int ret = -ENOMEM;
 	struct DevEntry *e, *entry = NULL;
@@ -619,8 +619,9 @@ static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
 		}
 	}
 
-	if (entry && (cyclic || entry->cyclic)) {
-		/* Only one client allowed in cyclic mode */
+	if (entry && (mode != IIO_BUFFER_MODE_CONTINUOUS ||
+		      entry->mode != IIO_BUFFER_MODE_CONTINUOUS)) {
+		/* Only one client allowed in non-continuous mode */
 		ret = -EBUSY;
 		goto err_free_words;
 	}
@@ -665,7 +666,7 @@ static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
 	if (!entry->mask)
 		goto err_free_entry;
 
-	entry->cyclic = cyclic;
+	entry->mode = mode;
 	entry->nb_words = len;
 	entry->update_mask = true;
 	entry->dev = dev;
@@ -768,9 +769,9 @@ static int close_dev_helper(struct parser_pdata *pdata, struct iio_device *dev)
 }
 
 int open_dev(struct parser_pdata *pdata, struct iio_device *dev,
-		size_t samples_count, const char *mask, bool cyclic)
+		size_t samples_count, const char *mask, enum iio_buffer_mode mode)
 {
-	int ret = open_dev_helper(pdata, dev, samples_count, mask, cyclic);
+	int ret = open_dev_helper(pdata, dev, samples_count, mask, mode);
 	print_value(pdata, ret);
 	return ret;
 }

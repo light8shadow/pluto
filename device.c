@@ -258,7 +258,8 @@ const char * iio_device_find_debug_attr(const struct iio_device *dev,
 }
 
 static int iio_device_open_mask(const struct iio_device *dev,
-		size_t samples_count, uint32_t *mask, size_t words, bool cyclic)
+		size_t samples_count, uint32_t *mask, size_t words,
+		enum iio_buffer_mode mode)
 {
 	unsigned int i;
 	bool has_channels = false;
@@ -270,13 +271,13 @@ static int iio_device_open_mask(const struct iio_device *dev,
 
 	if (dev->ctx->ops->open)
 		return dev->ctx->ops->open(dev,
-				samples_count, mask, words, cyclic);
+				samples_count, mask, words, mode);
 	else
 		return -ENOSYS;
 }
 
 int iio_device_open(const struct iio_device *dev,
-		size_t samples_count, bool cyclic)
+		size_t samples_count, enum iio_buffer_mode mode)
 {
 	size_t nb = (dev->nb_channels + 31) / 32;
 	uint32_t *mask = NULL;
@@ -296,7 +297,7 @@ int iio_device_open(const struct iio_device *dev,
 			SET_BIT(mask, chn->index);
 	}
 
-	ret = iio_device_open_mask(dev, samples_count, mask, nb, cyclic);
+	ret = iio_device_open_mask(dev, samples_count, mask, nb, mode);
 	free(mask);
 	return ret;
 }

@@ -282,7 +282,7 @@ static long exec_command(const char *cmd, int fd)
 }
 
 static int network_open(const struct iio_device *dev, size_t samples_count,
-		uint32_t *mask, size_t nb, bool cyclic)
+		uint32_t *mask, size_t nb, enum iio_buffer_mode mode)
 {
 	char buf[1024], *ptr;
 	unsigned int i;
@@ -300,7 +300,19 @@ static int network_open(const struct iio_device *dev, size_t samples_count,
 		ptr += 8;
 	}
 
-	strcpy(ptr, cyclic ? " CYCLIC\r\n" : "\r\n");
+	switch (mode) {
+	case IIO_BUFFER_MODE_CONTINUOUS:
+		strcpy(ptr, "\r\n");
+		break;
+	case IIO_BUFFER_MODE_CYCLIC:
+		strcpy(ptr, " CYCLIC\r\n");
+		break;
+	case IIO_BUFFER_MODE_REPEAT:
+		strcpy(ptr, " REPEAT\r\n");
+		break;
+	default:
+		return -EINVAL;
+	}
 
 	network_lock(dev->ctx->pdata);
 	ret = (int) exec_command(buf, dev->ctx->pdata->fd);

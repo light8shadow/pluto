@@ -49,6 +49,7 @@
 #define BLOCK_DEQUEUE_IOCTL _IOWR('i', 0xa4, struct block)
 
 #define BLOCK_FLAG_CYCLIC BIT(1)
+#define BLOCK_FLAG_REPEAT BIT(2)
 
 /* Forward declarations */
 static ssize_t local_read_dev_attr(const struct iio_device *dev,
@@ -84,7 +85,8 @@ struct iio_device_pdata {
 	struct block blocks[NB_BLOCKS];
 	void *addrs[NB_BLOCKS];
 	int last_dequeued;
-	bool is_high_speed, cyclic, cyclic_buffer_enqueued, buffer_enabled;
+	bool is_high_speed, cyclic_buffer_enqueued, buffer_enabled;
+	enum iio_buffer_mode mode;
 };
 
 static const char * const device_attrs_blacklist[] = {
@@ -258,8 +260,8 @@ static ssize_t local_write(const struct iio_device *dev,
 	/* Writing is forbidden in cyclic mode with devices without the
 	 * high-speed mmap interface, except for the devices starting with
 	 * "cf-": in this case only cyclic mode is allowed. */
-	if (!pdata->is_high_speed && pdata->cyclic !=
-			(dev->name && !strncmp(dev->name, "cf-", 3)))
+	if (!pdata->is_high_speed && ((pdata->mode != IIO_BUFFER_MODE_CONTINUOUS) !=
+			(dev->name && !strncmp(dev->name, "cf-", 3))))
 		return -EACCES;
 
 	ret = device_check_ready(dev, true);
@@ -302,11 +304,19 @@ static ssize_t local_get_buffer(const struct iio_device *dev,
 	if (pdata->last_dequeued >= 0) {
 		struct block *last_block = &pdata->blocks[pdata->last_dequeued];
 
-		if (pdata->cyclic) {
+		switch (pdata->mode) {
+		case IIO_BUFFER_MODE_CYCLIC:
 			if (pdata->cyclic_buffer_enqueued)
 				return -EBUSY;
-			pdata->blocks[0].flags |= BLOCK_FLAG_CYCLIC;
+			last_block->flags = BLOCK_FLAG_CYCLIC;
 			pdata->cyclic_buffer_enqueued = true;
+			break;
+		case IIO_BUFFER_MODE_REPEAT:
+			last_block->flags = BLOCK_FLAG_REPEAT;
+			break;
+		default:
+			last_block->flags = 0;
+			break;
 		}
 
 		last_block->bytes_used = bytes_used;
@@ -318,7 +328,7 @@ static ssize_t local_get_buffer(const struct iio_device *dev,
 			return ret;
 		}
 
-		if (pdata->cyclic) {
+		if (pdata->mode == IIO_BUFFER_MODE_CYCLIC) {
 			*addr_ptr = pdata->addrs[pdata->last_dequeued];
 			return (ssize_t) last_block->bytes_used;
 		}
@@ -571,12 +581,21 @@ static int enable_high_speed(const struct iio_device *dev)
 	unsigned int i;
 	int ret, fd = fileno(pdata->f);
 
-	if (pdata->cyclic) {
-		pdata->nb_blocks = 1;
-		DEBUG("Enabling cyclic mode\n");
-	} else {
+	switch (pdata->mode) {
+	case IIO_BUFFER_MODE_CONTINUOUS:
 		pdata->nb_blocks = NB_BLOCKS;
-		DEBUG("Cyclic mode not enabled\n");
+		DEBUG("Buffer mode: continuous\n");
+		break;
+	case IIO_BUFFER_MODE_CYCLIC:
+		pdata->nb_blocks = 1;
+		DEBUG("Buffer mode: cyclic\n");
+		break;
+	case IIO_BUFFER_MODE_REPEAT:
+		pdata->nb_blocks = 2;
+		DEBUG("Buffer mode: repeat\n");
+		break;
+	default:
+		return -EINVAL;
 	}
 
 	req.type = 0;
@@ -637,7 +656,7 @@ static bool local_length_in_bytes(const struct iio_device *dev)
 }
 
 static int local_open(const struct iio_device *dev, size_t samples_count,
-		uint32_t *mask, size_t nb, bool cyclic)
+		uint32_t *mask, size_t nb, enum iio_buffer_mode mode)
 {
 	unsigned int i;
 	int ret;
@@ -675,7 +694,7 @@ static int local_open(const struct iio_device *dev, size_t samples_count,
 	/* There was a bug in older kernel versions that cause the kernel to
   	 * crash if the scan_elements _en file for a channel was set to 1, so
  	 * try to avoid that */
-	if (cyclic) {
+	if (mode != IIO_BUFFER_MODE_CONTINUOUS) {
 		unsigned int major, minor;
 		struct utsname uts;
 		uname(&uts);
@@ -697,7 +716,7 @@ static int local_open(const struct iio_device *dev, size_t samples_count,
 		}
 	}
 
-	pdata->cyclic = cyclic;
+	pdata->mode = mode;
 	pdata->cyclic_buffer_enqueued = false;
 	pdata->buffer_enabled = false;
 	pdata->samples_count = samples_count;
