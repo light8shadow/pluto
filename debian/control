@@ -96,3 +96,26 @@ Description: libiio documentation
  the IIO subsystem of the Linux kernel.
  .
  This package contains the documentation in HTML format.
+
+Package: libiio++0
+Architecture: any
+Multi-Arch: same
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Library for interfacing with IIO devices
+ Libiio is a library that has been conceived to ease the development of
+ applications interfacing Industrial Input/Output (IIO) devices through
+ the IIO subsystem of the Linux kernel.
+ .
+ This package contains the C++11 bindings library.
+
+Package: libiio++-dev
+Section: libdevel
+Architecture: any
+Depends: libiio++0 (= ${binary:Version}), ${misc:Depends}
+Description: libiio development files
+ Libiio is a library that has been conceived to ease the development of
+ applications interfacing Industrial Input/Output (IIO) devices through
+ the IIO subsystem of the Linux kernel.
+ .
+ This package contains the development files for the C++11 bindings.

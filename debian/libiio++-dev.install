@@ -1,0 +1,3 @@
+usr/include/iio.hpp
+usr/lib/*/libiio++.so
+usr/lib/*/pkgconfig/libiio++.pc

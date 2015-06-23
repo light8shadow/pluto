@@ -11,3 +11,5 @@ libiio-dev
 libiio-utils
 iiod
 python-libiio
+libiio++0
+libiio++-dev
