@@ -102,6 +102,16 @@ add_definitions(-DLIBIIO_VERSION_MAJOR=${LIBIIO_VERSION_MAJOR})
 add_definitions(-DLIBIIO_VERSION_MINOR=${LIBIIO_VERSION_MINOR})
 add_definitions(-DLIBIIO_VERSION_GIT="${LIBIIO_VERSION_GIT}")
 
+if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
+	include(CheckCSourceCompiles)
+	set(CMAKE_REQUIRED_DEFINITIONS "-D_GNU_SOURCE=1")
+	check_c_source_compiles("#include <fcntl.h>\nint main(void) { return (int) splice(0, 0, 0, 0, 0, 0); }" HAS_SPLICE)
+
+	if (HAS_SPLICE)
+		add_definitions(-D_GNU_SOURCE=1 -DWITH_SPLICE=1)
+	endif()
+endif()
+
 if(WITH_LOCAL_BACKEND)
 	add_definitions(-DLOCAL_BACKEND=1)
 	set(LIBIIO_CFILES ${LIBIIO_CFILES} local.c)
@@ -118,13 +128,11 @@ if(WITH_NETWORK_BACKEND)
 		set(LIBS_TO_LINK ${LIBS_TO_LINK} wsock32 ws2_32)
 	endif()
 
-	if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-		include(CheckCSourceCompiles)
-		set(CMAKE_REQUIRED_DEFINITIONS "-D_GNU_SOURCE=1")
+	if(HAS_SPLICE AND ${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 		check_c_source_compiles("#include <fcntl.h>\nint main(void) { return O_TMPFILE; }" HAS_O_TMPFILE)
 
 		if (HAS_O_TMPFILE)
-			add_definitions(-D_GNU_SOURCE=1 -DWITH_NETWORK_GET_BUFFER=1)
+			add_definitions(-DWITH_NETWORK_GET_BUFFER=1)
 		endif()
 	endif()
 
