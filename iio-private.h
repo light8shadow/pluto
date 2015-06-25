@@ -66,7 +66,7 @@ struct iio_backend_ops {
 	int (*open)(const struct iio_device *dev,
 			size_t samples_count, bool cyclic);
 	int (*close)(const struct iio_device *dev);
-	int (*get_fd)(const struct iio_device *dev);
+	int (*get_fd)(const struct iio_device *dev, bool for_poll);
 	int (*set_blocking_mode)(const struct iio_device *dev, bool blocking);
 
 	int (*set_kernel_buffers_count)(const struct iio_device *dev,
@@ -186,6 +186,7 @@ ssize_t iio_device_read_raw(const struct iio_device *dev,
 ssize_t iio_device_write_raw(const struct iio_device *dev,
 		const void *src, size_t len);
 int iio_device_get_poll_fd(const struct iio_device *dev);
+int iio_device_get_splice_fd(const struct iio_device *dev);
 
 int read_double(const char *str, double *val);
 int write_double(char *buf, size_t len, double val);
