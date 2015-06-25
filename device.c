@@ -296,7 +296,15 @@ int iio_device_close(const struct iio_device *dev)
 int iio_device_get_poll_fd(const struct iio_device *dev)
 {
 	if (dev->ctx->ops->get_fd)
-		return dev->ctx->ops->get_fd(dev);
+		return dev->ctx->ops->get_fd(dev, true);
+	else
+		return -ENOSYS;
+}
+
+int iio_device_get_splice_fd(const struct iio_device *dev)
+{
+	if (dev->ctx->ops->get_fd)
+		return dev->ctx->ops->get_fd(dev, false);
 	else
 		return -ENOSYS;
 }
