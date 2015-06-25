@@ -713,45 +713,6 @@ err_unlock:
 }
 
 #ifdef WITH_NETWORK_GET_BUFFER
-static ssize_t network_do_splice(int fd_out, int fd_in, size_t len)
-{
-	int pipefd[2];
-	ssize_t ret, read_len = len;
-
-	ret = (ssize_t) pipe(pipefd);
-	if (ret < 0)
-		return -errno;
-
-	do {
-		/*
-		 * SPLICE_F_NONBLOCK is just here to avoid a deadlock when
-		 * splicing from a socket. As the socket is not in
-		 * non-blocking mode, it should never return -EAGAIN.
-		 * TODO(pcercuei): Find why it locks...
-		 * */
-		ret = splice(fd_in, NULL, pipefd[1], NULL, len,
-				SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-		if (!ret)
-			ret = -EIO;
-		if (ret < 0)
-			goto err_close_pipe;
-
-		ret = splice(pipefd[0], NULL, fd_out, NULL, ret,
-				SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-		if (!ret)
-			ret = -EIO;
-		if (ret < 0)
-			goto err_close_pipe;
-
-		len -= ret;
-	} while (len);
-
-err_close_pipe:
-	close(pipefd[0]);
-	close(pipefd[1]);
-	return ret < 0 ? ret : read_len;
-}
-
 static ssize_t network_get_buffer(const struct iio_device *dev,
 		void **addr_ptr, size_t bytes_used,
 		uint32_t *mask, size_t words)
@@ -793,8 +754,8 @@ static ssize_t network_get_buffer(const struct iio_device *dev,
 		if (ret < 0)
 			goto err_close_memfd;
 
-		ret = network_do_splice(pdata->fd,
-				pdata->memfd, pdata->mmap_len);
+		lseek(pdata->memfd, 0, SEEK_SET);
+		ret = iio_splice(pdata->fd, pdata->memfd, pdata->mmap_len);
 		if (ret < 0)
 			goto err_close_memfd;
 
@@ -838,7 +799,7 @@ static ssize_t network_get_buffer(const struct iio_device *dev,
 
 			mask = NULL; /* We read the mask only once */
 
-			ret = network_do_splice(pdata->memfd, pdata->fd, ret);
+			ret = iio_splice(pdata->memfd, pdata->fd, ret);
 			if (ret < 0)
 				goto err_unlock;
 
@@ -846,6 +807,7 @@ static ssize_t network_get_buffer(const struct iio_device *dev,
 			len -= ret;
 		} while (len);
 
+		lseek(pdata->memfd, 0, SEEK_SET);
 		network_unlock_dev(pdata);
 	}
 
