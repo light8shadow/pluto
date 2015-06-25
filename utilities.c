@@ -25,6 +25,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef WITH_SPLICE
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 #if defined(_WIN32) || (defined(__USE_XOPEN2K8) && \
 		(!defined(__UCLIBC__) || defined(__UCLIBC_HAS_LOCALE__)))
 #define LOCALE_SUPPORT
@@ -211,6 +216,51 @@ int set_blocking_mode(int fd, bool blocking)
 
 	ret = fcntl(fd, F_SETFL, ret);
 	return ret < 0 ? -errno : 0;
+#else
+	return -ENOSYS;
+#endif
+}
+
+ssize_t iio_splice(int fd_out, int fd_in, size_t len)
+{
+#ifdef WITH_SPLICE
+	int pipefd[2];
+	ssize_t ret, read_len = len;
+
+	ret = (ssize_t) pipe(pipefd);
+	if (ret < 0)
+		return -errno;
+
+	do {
+		/*
+		 * SPLICE_F_NONBLOCK is just here to avoid a deadlock when
+		 * splicing to the pipe, that happens because the other end of
+		 * the pipe is not yet connected.
+		 *
+		 * As the file descriptors are not in non-blocking mode, it
+		 * should never return -EAGAIN.
+		 */
+		ret = splice(fd_in, NULL, pipefd[1], NULL, len,
+				SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+		if (!ret)
+			errno = EIO;
+		if (ret <= 0)
+			goto err_close_pipe;
+
+		ret = splice(pipefd[0], NULL, fd_out, NULL, ret,
+				SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+		if (!ret)
+			errno = EIO;
+		if (ret <= 0)
+			goto err_close_pipe;
+
+		len -= ret;
+	} while (len);
+
+err_close_pipe:
+	close(pipefd[0]);
+	close(pipefd[1]);
+	return ret < 0 ? -errno : read_len;
 #else
 	return -ENOSYS;
 #endif
