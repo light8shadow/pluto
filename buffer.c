@@ -20,6 +20,28 @@
 
 #include <errno.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#include <winsock2.h>
+#else
+#include <unistd.h>
+#include <sys/socket.h>
+#endif
+
+#ifndef _WIN32
+#define _read(x, y, z) read(x, y, z)
+#define _write(x, y, z) write(x, y, z)
+
+/* winsock2.h defines ERROR, we don't want that */
+#undef ERROR
+#endif
+
+#include "debug.h"
+
+/* Forward declaration */
+static ssize_t foreach_sample(struct iio_buffer *buffer,
+		ssize_t (*callback)(const struct iio_channel *,
+			void *, size_t, void *), void *d);
 
 struct callback_wrapper_data {
 	ssize_t (*callback)(const struct iio_channel *, void *, size_t, void *);
@@ -38,8 +60,8 @@ static bool device_is_high_speed(const struct iio_device *dev)
 		(ops->get_buffer(dev, NULL, 0, NULL, 0) != -ENOSYS);
 }
 
-struct iio_buffer * iio_device_create_buffer(const struct iio_device *dev,
-		size_t samples_count, bool cyclic)
+static struct iio_buffer * create_buffer(const struct iio_device *dev,
+		size_t samples_count, bool cyclic, bool for_splice)
 {
 	int ret = -EINVAL;
 	struct iio_buffer *buf;
@@ -68,11 +90,25 @@ struct iio_buffer * iio_device_create_buffer(const struct iio_device *dev,
 	 * iio_buffer_foreach_sample to be used. */
 	memcpy(buf->mask, dev->mask, dev->words * sizeof(*buf->mask));
 
-	ret = iio_device_open(dev, samples_count, cyclic, false);
+	ret = iio_device_open(dev, samples_count, cyclic, for_splice);
 	if (ret < 0)
 		goto err_free_mask;
 
-	buf->dev_is_high_speed = device_is_high_speed(dev);
+	if (for_splice) {
+		ret = iio_device_get_splice_fd(dev);
+		if (ret < 0)
+			goto err_free_mask;
+
+		buf->splice_fd = ret;
+	}
+
+	/* We default to true here. If one I/O call fails with -ENOTSOCK, we
+	 * will set this to false and revert to regular I/O calls. */
+	buf->splice_fd_is_socket = true;
+
+	buf->use_splice = for_splice;
+
+	buf->dev_is_high_speed = !for_splice && device_is_high_speed(dev);
 	if (buf->dev_is_high_speed) {
 		/* Dequeue the first buffer, so that buf->buffer is correctly
 		 * initialized */
@@ -107,10 +143,23 @@ err_set_errno:
 	return NULL;
 }
 
+struct iio_buffer * iio_device_create_buffer(const struct iio_device *dev,
+		size_t samples_count, bool cyclic)
+{
+	return create_buffer(dev, samples_count, cyclic, false);
+}
+
+struct iio_buffer * iio_device_create_splice_buffer(
+		const struct iio_device *dev,
+		size_t samples_count)
+{
+	return create_buffer(dev, samples_count, false, true);
+}
+
 void iio_buffer_destroy(struct iio_buffer *buffer)
 {
 	iio_device_close(buffer->dev);
-	if (!buffer->dev_is_high_speed)
+	if (!buffer->use_splice && !buffer->dev_is_high_speed)
 		free(buffer->buffer);
 	free(buffer->mask);
 	free(buffer);
@@ -130,6 +179,9 @@ ssize_t iio_buffer_refill(struct iio_buffer *buffer)
 {
 	ssize_t read;
 	const struct iio_device *dev = buffer->dev;
+
+	if (buffer->use_splice)
+		return -EPERM;
 
 	if (buffer->dev_is_high_speed) {
 		read = dev->ctx->ops->get_buffer(dev, &buffer->buffer,
@@ -151,6 +203,9 @@ ssize_t iio_buffer_push(struct iio_buffer *buffer)
 {
 	const struct iio_device *dev = buffer->dev;
 	ssize_t ret;
+
+	if (buffer->use_splice)
+		return -EPERM;
 
 	if (buffer->dev_is_high_speed) {
 		void *buf;
@@ -192,7 +247,244 @@ ssize_t iio_buffer_push_partial(struct iio_buffer *buffer, size_t samples_count)
 	return iio_buffer_push(buffer);
 }
 
+static bool iio_buffer_mask_match(const struct iio_buffer *buf)
+{
+	unsigned int i;
+
+	for (i = 0; i < buf->dev->words; i++)
+		if (buf->mask[i] != buf->dev->mask[i])
+			return false;
+
+	return true;
+}
+
+static ssize_t buffer_transfer(int fd, void *buffer, size_t len,
+		bool is_socket, bool is_tx)
+{
+	uintptr_t ptr = (uintptr_t) buffer;
+
+	while (len) {
+		ssize_t ret;
+
+		if (is_tx) {
+			if (is_socket)
+				ret = send(fd, (const void *) ptr, len, 0);
+			else
+				ret = _write(fd, (const void *) ptr, len);
+		} else {
+			if (is_socket)
+				ret = recv(fd, (void *) ptr, len, 0);
+			else
+				ret = _read(fd, (void *) ptr, len);
+		}
+
+		if (ret < 0) {
+#ifdef _WIN32
+			int error = WSAGetLastError();
+#else
+			int error = errno;
+#endif
+			if (error == EINTR)
+				continue;
+
+			return (ssize_t) -error;
+		}
+
+		ptr += ret;
+		len -= ret;
+	}
+
+	return (ssize_t) (ptr - (uintptr_t) buffer);
+}
+
+static ssize_t iio_buffer_transfer_hw(struct iio_buffer *buf,
+		size_t len, bool is_tx)
+{
+	ssize_t ret;
+
+	ret = buffer_transfer(buf->splice_fd, buf->buffer, len,
+			buf->splice_fd_is_socket, is_tx);
+	if (ret == -ENOTSOCK) {
+		buf->splice_fd_is_socket = false;
+		ret = buffer_transfer(buf->splice_fd, buf->buffer, len,
+				buf->splice_fd_is_socket, is_tx);
+	}
+
+	return ret;
+}
+
+static ssize_t iio_buffer_transfer_fd(struct iio_buffer *buf,
+		int fd, size_t len, bool is_tx)
+{
+	ssize_t ret;
+
+	ret = buffer_transfer(fd, buf->buffer, len, true, is_tx);
+	if (ret == -ENOTSOCK)
+		ret = buffer_transfer(fd, buf->buffer, len, false, is_tx);
+
+	return ret;
+}
+
+struct buffer_extract_params {
+	/* 16 bytes for a sample of one channel, should be enough */
+	char zeros[16];
+	size_t last_sample_size;
+	bool is_socket;
+	int fd;
+};
+
+static ssize_t extract_sample_cb(const struct iio_channel *chn,
+		void *buf, size_t len, void *d)
+{
+	struct buffer_extract_params *params = d;
+	ssize_t ret;
+
+	/* Transfer some dummy data for alignment purposes, if needed. */
+	if (params->last_sample_size % len) {
+		size_t nb_zeros = len - (params->last_sample_size % len);
+
+		ret = buffer_transfer(params->fd, params->zeros, nb_zeros,
+				params->is_socket, true);
+		if (ret == -ENOTSOCK) {
+			params->is_socket = false;
+			ret = buffer_transfer(params->fd, params->zeros,
+					nb_zeros, false, true);
+		}
+	}
+
+	ret = buffer_transfer(params->fd, buf, len,
+			params->is_socket, true);
+	if (ret == -ENOTSOCK) {
+		params->is_socket = false;
+		ret = buffer_transfer(params->fd, buf, len, false, true);
+	}
+
+	params->last_sample_size = len;
+	return ret;
+}
+
+static ssize_t iio_buffer_extract(struct iio_buffer *buf, int fd, size_t len)
+{
+	uintptr_t ptr = (uintptr_t) buf->buffer;
+	bool is_tx = iio_device_is_tx(buf->dev);
+	bool is_socket = true;
+	ssize_t ret;
+	struct buffer_extract_params extract_params;
+
+	if (is_tx) {
+		/* This should never happen. */
+		ERROR("Mask mismatch detected for a TX device!\n");
+		return -EIO;
+	}
+
+	memset(extract_params.zeros, 0, sizeof(extract_params.zeros));
+	extract_params.is_socket = true;
+	extract_params.fd = fd;
+	extract_params.last_sample_size = 0;
+
+	ret = iio_buffer_transfer_hw(buf, len, false);
+	if (ret < 0)
+		return ret;
+
+	buf->data_length = (size_t) ret;
+	return foreach_sample(buf, extract_sample_cb, &extract_params);
+}
+
+static ssize_t iio_buffer_copy(struct iio_buffer *buf, int fd, size_t len)
+{
+	uintptr_t ptr = (uintptr_t) buf->buffer;
+	bool is_tx = iio_device_is_tx(buf->dev);
+	bool is_socket = true;
+	ssize_t ret;
+
+	if (is_tx)
+		ret = iio_buffer_transfer_fd(buf, fd, len, false);
+	else
+		ret = iio_buffer_transfer_hw(buf, len, false);
+	if (ret < 0)
+		return ret;
+
+	if (is_tx)
+		ret = iio_buffer_transfer_hw(buf, len, true);
+	else
+		ret = iio_buffer_transfer_fd(buf, fd, len, true);
+	return ret;
+}
+
+static ssize_t iio_buffer_zerocopy(struct iio_buffer *buffer,
+		int fd, size_t len, bool mask_match)
+{
+	if (!mask_match)
+		return iio_buffer_extract(buffer, fd, len);
+	else
+		return iio_buffer_copy(buffer, fd, len);
+}
+
+ssize_t iio_buffer_splice(struct iio_buffer *buffer, int fd, size_t len)
+{
+	const struct iio_device *dev = buffer->dev;
+	const struct iio_backend_ops *ops = dev->ctx->ops;
+	size_t nb_bytes = 0;
+	ssize_t ret;
+	bool mask_match;
+
+	if (len > buffer->length)
+		return -EINVAL;
+
+	if (!buffer->use_splice)
+		return -EPERM;
+
+	if (ops->before_splice) {
+		ret = ops->before_splice(dev, len, buffer->mask, dev->words);
+		if (ret < 0)
+			return ret;
+
+		len = (size_t) ret;
+	}
+
+	/* Only allow splicing if the channel mask we get is the one we want */
+	mask_match = iio_buffer_mask_match(buffer);
+
+	while (len) {
+		ssize_t splice_len;
+
+		if (ops->get_splice_len) {
+			splice_len = ops->get_splice_len(dev, len);
+			if (splice_len < 0) {
+				ret = splice_len;
+				break;
+			}
+		} else {
+			splice_len = len;
+		}
+
+		ret = iio_buffer_zerocopy(buffer, fd,
+				(size_t) splice_len, mask_match);
+		if (ret < 0)
+			break;
+
+		nb_bytes += (size_t) ret;
+		len -= (size_t) ret;
+	}
+
+	if (ops->after_splice)
+		ops->after_splice(dev);
+
+err_return:
+	return ret < 0 ? ret : nb_bytes;
+}
+
 ssize_t iio_buffer_foreach_sample(struct iio_buffer *buffer,
+		ssize_t (*callback)(const struct iio_channel *,
+			void *, size_t, void *), void *d)
+{
+	if (buffer->use_splice)
+		return -EPERM;
+	else
+		return foreach_sample(buffer, callback, d);
+}
+
+static ssize_t foreach_sample(struct iio_buffer *buffer,
 		ssize_t (*callback)(const struct iio_channel *,
 			void *, size_t, void *), void *d)
 {

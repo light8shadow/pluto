@@ -96,6 +96,11 @@ struct iio_backend_ops {
 			unsigned int *minor, char git_tag[8]);
 
 	int (*set_timeout)(struct iio_context *ctx, unsigned int timeout);
+
+	ssize_t (*before_splice)(const struct iio_device *dev, size_t len,
+			uint32_t *mask, size_t words);
+	ssize_t (*get_splice_len)(const struct iio_device *dev, size_t len);
+	void (*after_splice)(const struct iio_device *dev);
 };
 
 struct iio_context_pdata;
@@ -165,6 +170,9 @@ struct iio_buffer {
 	unsigned int dev_sample_size;
 	unsigned int sample_size;
 	bool is_output, dev_is_high_speed;
+
+	int splice_fd;
+	bool use_splice, splice_fd_is_socket;
 };
 
 void free_channel(struct iio_channel *chn);

@@ -870,6 +870,22 @@ __api __pure const struct iio_device * iio_buffer_get_device(
 __api struct iio_buffer * iio_device_create_buffer(const struct iio_device *dev,
 		size_t samples_count, bool cyclic);
 
+/** @brief Create an input or output buffer associated to the given device
+ * @param dev A pointer to an iio_device structure
+ * @param samples_count The number of samples that the buffer should contain
+ * @return On success, a pointer to an iio_buffer structure
+ * @return On error, NULL is returned, and errno is set to the error code
+ *
+ * <b>NOTE:</b> Channels that have to be written to / read from must be enabled
+ * before creating the buffer.
+ *
+ * This function will create an iio_buffer structure suitable for use with
+ * iio_buffer_splice. Any other way to access the data is invalid and will issue
+ * an error. */
+__api struct iio_buffer * iio_device_create_splice_buffer(
+		const struct iio_device *dev,
+		size_t samples_count);
+
 
 /** @brief Destroy the given buffer
  * @param buf A pointer to an iio_buffer structure
@@ -930,6 +946,26 @@ __api ssize_t iio_buffer_push_partial(struct iio_buffer *buf,
 		size_t samples_count);
 
 
+/** @brief Transfer the samples between the buffer and a file descriptor
+ * @param buf A pointer to an iio_buffer structure
+ * @param fd A valid file descriptor
+ * @param len The number of bytes that should be transferred
+ * @return On success, the number of bytes transferred is returned
+ * @return On error, a negative errno code is returned
+ *
+ * <b>NOTE:</b> When used with an iio_buffer corresponding to an input device,
+ * the data is transferred from the buffer to the file descriptor.
+ * When used with an iio_buffer coresponding to an output device, the data
+ * is transferred from the file descriptor to the device.
+ *
+ * When possible, the data will be transferred without any actual copy
+ * happening, using the splice() system call of the Linux kernel.
+ *
+ * For this call to work, the iio_buffer must have been created using the
+ * iio_device_create_splice_buffer function. */
+__api ssize_t iio_buffer_splice(struct iio_buffer *buf, int fd, size_t len);
+
+
 /** @brief Get the start address of the buffer
  * @param buf A pointer to an iio_buffer structure
  * @return A pointer corresponding to the start address of the buffer */
@@ -942,7 +978,7 @@ __api void * iio_buffer_start(const struct iio_buffer *buf);
  * @return A pointer to the first sample found, or to the end of the buffer if
  * no sample for the given channel is present in the buffer
  *
- * <b>NOTE:</b> This fonction, coupled with iio_buffer_step and iio_buffer_end,
+ * <b>NOTE:</b> This function, coupled with iio_buffer_step and iio_buffer_end,
  * can be used to iterate on all the samples of a given channel present in the
  * buffer, doing the following:
  *
