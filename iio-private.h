@@ -165,6 +165,8 @@ struct iio_buffer {
 	unsigned int dev_sample_size;
 	unsigned int sample_size;
 	bool is_output, dev_is_high_speed;
+
+	bool spliced;
 };
 
 void free_channel(struct iio_channel *chn);

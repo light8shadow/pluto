@@ -20,6 +20,18 @@
 
 #include <errno.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#include <winsock2.h>
+#else
+#include <unistd.h>
+#include <sys/socket.h>
+#endif
+
+#ifndef _WIN32
+#define _read(x, y, z) read(x, y, z)
+#define _write(x, y, z) write(x, y, z)
+#endif
 
 struct callback_wrapper_data {
 	ssize_t (*callback)(const struct iio_channel *, void *, size_t, void *);
@@ -143,6 +155,7 @@ ssize_t iio_buffer_refill(struct iio_buffer *buffer)
 		buffer->data_length = read;
 		buffer->sample_size = iio_device_get_sample_size_mask(dev,
 				buffer->mask, dev->words);
+		buffer->spliced = false;
 	}
 	return read;
 }
@@ -155,8 +168,10 @@ ssize_t iio_buffer_push(struct iio_buffer *buffer)
 		void *buf;
 		ssize_t ret = dev->ctx->ops->get_buffer(dev,
 				&buf, buffer->length, buffer->mask, dev->words);
-		if (ret >= 0)
+		if (ret >= 0) {
 			buffer->buffer = buf;
+			buffer->spliced = false;
+		}
 		return ret;
 	} else {
 		size_t length = buffer->length;
@@ -173,8 +188,92 @@ ssize_t iio_buffer_push(struct iio_buffer *buffer)
 			ptr = (void *) ((uintptr_t) ptr + ret);
 		}
 
+		buffer->spliced = false;
 		return (ssize_t) buffer->length;
 	}
+}
+
+static ssize_t iio_buffer_copy(struct iio_buffer *buf, int fd, size_t len)
+{
+	uintptr_t ptr = (uintptr_t) buf->buffer;
+	bool is_tx = iio_device_is_tx(buf->dev);
+	bool is_socket = true;
+
+	while (len) {
+		ssize_t ret;
+
+		if (is_tx) {
+			if (is_socket)
+				ret = recv(fd, (void *) ptr, len, 0);
+			else
+				ret = _read(fd, (void *) ptr, len);
+		} else {
+			if (is_socket)
+				ret = send(fd, (const void *) ptr, len, 0);
+			else
+				ret = _write(fd, (const void *) ptr, len);
+		}
+
+		if (ret < 0) {
+#ifdef _WIN32
+			int error = WSAGetLastError();
+#else
+			int error = errno;
+#endif
+			if (error == ENOTSOCK) {
+				is_socket = false;
+				continue;
+			}
+			if (error == EINTR)
+				continue;
+			return (ssize_t) -error;
+		}
+
+		ptr += ret;
+		len -= ret;
+	}
+
+	return (ssize_t) (ptr - (uintptr_t) buf->buffer);
+}
+
+#ifdef WITH_SPLICE
+static ssize_t iio_buffer_zerocopy(struct iio_buffer *buf, int fd, size_t len)
+{
+	ssize_t ret;
+	bool is_tx = iio_device_is_tx(buf->dev);
+	int fd_dev, fd_in, fd_out;
+
+	fd_dev = iio_device_get_splice_fd(buf->dev);
+	if (fd_dev < 0)
+		return (ssize_t) fd_dev;
+
+	fd_in = is_tx ? fd : fd_dev;
+	fd_out = is_tx ? fd_dev : fd;
+
+	return iio_splice(fd_out, fd_in, len);
+}
+#endif
+
+ssize_t iio_buffer_splice(struct iio_buffer *buffer, int fd, size_t len)
+{
+	ssize_t ret = -ENOSYS;
+
+	if (buffer->spliced)
+		return -EBUSY;
+
+	if (len > buffer->length)
+		return -EINVAL;
+
+#ifdef WITH_SPLICE
+	if (!isatty(fd))
+		ret = iio_buffer_zerocopy(buffer, fd, len);
+#endif
+	if (ret == -ENOSYS)
+		ret = iio_buffer_copy(buffer, fd, len);
+
+	if (ret > 0)
+		buffer->spliced = true;
+	return ret;
 }
 
 ssize_t iio_buffer_foreach_sample(struct iio_buffer *buffer,
@@ -188,6 +287,9 @@ ssize_t iio_buffer_foreach_sample(struct iio_buffer *buffer,
 
 	if (buffer->sample_size <= 0)
 		return -EINVAL;
+
+	if (buffer->spliced)
+		return -EBUSY;
 
 	if (buffer->data_length < buffer->dev_sample_size)
 		return 0;

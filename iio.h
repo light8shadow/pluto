@@ -919,6 +919,23 @@ __api ssize_t iio_buffer_refill(struct iio_buffer *buf);
 __api ssize_t iio_buffer_push(struct iio_buffer *buf);
 
 
+/** @brief Transfer the samples between the buffer and a file descriptor
+ * @param buf A pointer to an iio_buffer structure
+ * @param fd A valid file descriptor
+ * @param len The number of bytes that should be transferred
+ * @return On success, the number of bytes transferred is returned
+ * @return On error, a negative errno code is returned
+ *
+ * <b>NOTE:</b> When used with an iio_buffer corresponding to an input device,
+ * the data is transferred from the buffer to the file descriptor.
+ * When used with an iio_buffer coresponding to an output device, the data
+ * is transferred from the file descriptor to the device.
+ *
+ * When possible, the data will be transferred without any actual copy
+ * happening, using the splice() system call of the Linux kernel. */
+__api ssize_t iio_buffer_splice(struct iio_buffer *buf, int fd, size_t len);
+
+
 /** @brief Get the start address of the buffer
  * @param buf A pointer to an iio_buffer structure
  * @return A pointer corresponding to the start address of the buffer */
@@ -931,7 +948,7 @@ __api void * iio_buffer_start(const struct iio_buffer *buf);
  * @return A pointer to the first sample found, or to the end of the buffer if
  * no sample for the given channel is present in the buffer
  *
- * <b>NOTE:</b> This fonction, coupled with iio_buffer_step and iio_buffer_end,
+ * <b>NOTE:</b> This function, coupled with iio_buffer_step and iio_buffer_end,
  * can be used to iterate on all the samples of a given channel present in the
  * buffer, doing the following:
  *
