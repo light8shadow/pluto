@@ -1151,6 +1151,20 @@ static struct iio_context * network_clone(const struct iio_context *ctx)
 	return iio_create_network_context(ctx->description);
 }
 
+static int network_get_fd(const struct iio_device *dev, bool for_poll)
+{
+	if (for_poll)
+		return -EPERM;
+#ifdef WITH_NETWORK_GET_BUFFER
+	if (dev->pdata->memfd < 0)
+		return -EBADF;
+	else
+		return dev->pdata->memfd;
+#else
+	return -ENOSYS;
+#endif
+}
+
 static struct iio_backend_ops network_ops = {
 	.clone = network_clone,
 	.open = network_open,
@@ -1169,6 +1183,7 @@ static struct iio_backend_ops network_ops = {
 	.shutdown = network_shutdown,
 	.get_version = network_get_version,
 	.set_timeout = network_set_timeout,
+	.get_fd = network_get_fd,
 };
 
 static struct iio_context * get_context(int fd)
