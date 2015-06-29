@@ -221,7 +221,10 @@ int main(int argc, char **argv)
 		}
 	}
 
-	buffer = iio_device_create_buffer(dev, buffer_size, false);
+	if (!num_samples)
+		buffer = iio_device_create_splice_buffer(dev, buffer_size);
+	else
+		buffer = iio_device_create_buffer(dev, buffer_size, false);
 	if (!buffer) {
 		fprintf(stderr, "Unable to allocate buffer\n");
 		iio_context_destroy(ctx);
@@ -229,14 +232,24 @@ int main(int argc, char **argv)
 	}
 
 	while (app_running) {
-		int ret = iio_buffer_refill(buffer);
-		if (ret < 0) {
-			fprintf(stderr, "Unable to refill buffer: %s\n",
-					strerror(-ret));
-			break;
-		}
+		if (!num_samples) {
+			ssize_t ret = iio_buffer_splice(buffer,
+					fileno(stdout), buffer_size *
+					iio_device_get_sample_size(dev));
+			if (ret < 0) {
+				fprintf(stderr, "Unable to splice: %s\n",
+						strerror(-ret));
+			}
+		} else {
+			ssize_t ret = iio_buffer_refill(buffer);
+			if (ret < 0) {
+				fprintf(stderr, "Unable to refill buffer: %s\n",
+						strerror(-ret));
+				break;
+			}
 
-		iio_buffer_foreach_sample(buffer, print_sample, NULL);
+			iio_buffer_foreach_sample(buffer, print_sample, NULL);
+		}
 		fflush(stdout);
 	}
 
