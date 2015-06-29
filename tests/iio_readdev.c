@@ -229,14 +229,17 @@ int main(int argc, char **argv)
 	}
 
 	while (app_running) {
-		int ret = iio_buffer_refill(buffer);
+		ssize_t ret = iio_buffer_refill(buffer);
 		if (ret < 0) {
 			fprintf(stderr, "Unable to refill buffer: %s\n",
 					strerror(-ret));
 			break;
 		}
 
-		iio_buffer_foreach_sample(buffer, print_sample, NULL);
+		if (!num_samples)
+			iio_buffer_splice(buffer, fileno(stdout), (size_t) ret);
+		else
+			iio_buffer_foreach_sample(buffer, print_sample, NULL);
 		fflush(stdout);
 	}
 
