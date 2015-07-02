@@ -863,10 +863,12 @@ static int local_close(const struct iio_device *dev)
 	return (ret < 0) ? ret : 0;
 }
 
-static int local_get_fd(const struct iio_device *dev)
+static int local_get_fd(const struct iio_device *dev, bool for_poll)
 {
 	if (dev->pdata->fd == -1)
 		return -EBADF;
+	else if (!for_poll)
+		return -EPERM;
 	else
 		return dev->pdata->fd;
 }
