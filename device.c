@@ -269,7 +269,7 @@ bool iio_device_is_tx(const struct iio_device *dev)
 }
 
 int iio_device_open(const struct iio_device *dev,
-		size_t samples_count, bool cyclic)
+		size_t samples_count, bool cyclic, bool for_splice)
 {
 	unsigned int i;
 	bool has_channels = false;
@@ -280,7 +280,8 @@ int iio_device_open(const struct iio_device *dev,
 		return -EINVAL;
 
 	if (dev->ctx->ops->open)
-		return dev->ctx->ops->open(dev, samples_count, cyclic);
+		return dev->ctx->ops->open(dev, samples_count,
+				cyclic, for_splice);
 	else
 		return -ENOSYS;
 }

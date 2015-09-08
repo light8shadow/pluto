@@ -64,7 +64,7 @@ struct iio_backend_ops {
 	ssize_t (*write)(const struct iio_device *dev,
 			const void *src, size_t len);
 	int (*open)(const struct iio_device *dev,
-			size_t samples_count, bool cyclic);
+			size_t samples_count, bool cyclic, bool for_splice);
 	int (*close)(const struct iio_device *dev);
 	int (*get_fd)(const struct iio_device *dev, bool for_poll);
 	int (*set_blocking_mode)(const struct iio_device *dev, bool blocking);
@@ -178,7 +178,7 @@ int iio_context_init(struct iio_context *ctx);
 
 bool iio_device_is_tx(const struct iio_device *dev);
 int iio_device_open(const struct iio_device *dev,
-		size_t samples_count, bool cyclic);
+		size_t samples_count, bool cyclic, bool for_splice);
 int iio_device_close(const struct iio_device *dev);
 int iio_device_set_blocking_mode(const struct iio_device *dev, bool blocking);
 ssize_t iio_device_read_raw(const struct iio_device *dev,

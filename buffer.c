@@ -68,7 +68,7 @@ struct iio_buffer * iio_device_create_buffer(const struct iio_device *dev,
 	 * iio_buffer_foreach_sample to be used. */
 	memcpy(buf->mask, dev->mask, dev->words * sizeof(*buf->mask));
 
-	ret = iio_device_open(dev, samples_count, cyclic);
+	ret = iio_device_open(dev, samples_count, cyclic, false);
 	if (ret < 0)
 		goto err_free_mask;
 
