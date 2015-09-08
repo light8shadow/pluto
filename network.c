@@ -80,11 +80,6 @@ struct iio_context_pdata {
 
 struct iio_device_pdata {
 	int fd;
-#ifdef WITH_NETWORK_GET_BUFFER
-	int memfd;
-	void *mmap_addr;
-	size_t mmap_len;
-#endif
 	bool wait_for_err_code, is_cyclic, is_tx;
 #if HAVE_PTHREAD
 	pthread_mutex_t lock;
@@ -492,9 +487,6 @@ static int network_open(const struct iio_device *dev,
 	dev->pdata->is_cyclic = cyclic;
 	dev->pdata->fd = fd;
 	dev->pdata->wait_for_err_code = false;
-#ifdef WITH_NETWORK_GET_BUFFER
-	dev->pdata->mmap_len = samples_count * iio_device_get_sample_size(dev);
-#endif
 	return 0;
 }
 
@@ -564,16 +556,6 @@ static int network_close(const struct iio_device *dev)
 		network_unlock_dev(pdata);
 	}
 
-#ifdef WITH_NETWORK_GET_BUFFER
-	if (pdata->memfd >= 0)
-		close(pdata->memfd);
-	pdata->memfd = -1;
-
-	if (pdata->mmap_addr) {
-		munmap(pdata->mmap_addr, pdata->mmap_len);
-		pdata->mmap_addr = NULL;
-	}
-#endif
 	return ret;
 }
 
@@ -709,159 +691,6 @@ err_unlock:
 	network_unlock_dev(pdata);
 	return ret;
 }
-
-#ifdef WITH_NETWORK_GET_BUFFER
-static ssize_t network_do_splice(int fd_out, int fd_in, size_t len)
-{
-	int pipefd[2];
-	ssize_t ret, read_len = len;
-
-	ret = (ssize_t) pipe(pipefd);
-	if (ret < 0)
-		return -errno;
-
-	do {
-		/*
-		 * SPLICE_F_NONBLOCK is just here to avoid a deadlock when
-		 * splicing from a socket. As the socket is not in
-		 * non-blocking mode, it should never return -EAGAIN.
-		 * TODO(pcercuei): Find why it locks...
-		 * */
-		ret = splice(fd_in, NULL, pipefd[1], NULL, len,
-				SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-		if (!ret)
-			ret = -EIO;
-		if (ret < 0)
-			goto err_close_pipe;
-
-		ret = splice(pipefd[0], NULL, fd_out, NULL, ret,
-				SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-		if (!ret)
-			ret = -EIO;
-		if (ret < 0)
-			goto err_close_pipe;
-
-		len -= ret;
-	} while (len);
-
-err_close_pipe:
-	close(pipefd[0]);
-	close(pipefd[1]);
-	return ret < 0 ? ret : read_len;
-}
-
-static ssize_t network_get_buffer(const struct iio_device *dev,
-		void **addr_ptr, size_t bytes_used,
-		uint32_t *mask, size_t words)
-{
-	struct iio_device_pdata *pdata = dev->pdata;
-	ssize_t ret, read = 0;
-	int memfd;
-	bool tx;
-
-	if (pdata->is_cyclic)
-		return -ENOSYS;
-
-	/* We check early that the temporary file can be created, so that we can
-	 * return -ENOSYS in case it fails, which will indicate that the
-	 * high-speed interface is not available.
-	 *
-	 * O_TMPFILE -> Linux 3.11.
-	 * TODO: use memfd_create (Linux 3.17) */
-	memfd = open(P_tmpdir, O_RDWR | O_TMPFILE | O_EXCL, S_IRWXU);
-	if (memfd < 0)
-		return -ENOSYS;
-
-	if (!addr_ptr || words != (dev->nb_channels + 31) / 32) {
-		close(memfd);
-		return -EINVAL;
-	}
-
-	if (pdata->mmap_addr)
-		munmap(pdata->mmap_addr, pdata->mmap_len);
-
-	if (pdata->mmap_addr && pdata->is_tx) {
-		char buf[1024];
-		snprintf(buf, sizeof(buf), "WRITEBUF %s %lu\r\n",
-				dev->id, (unsigned long) bytes_used);
-
-		network_lock_dev(pdata);
-
-		ret = write_rwbuf_command(dev, buf, false);
-		if (ret < 0)
-			goto err_close_memfd;
-
-		ret = network_do_splice(pdata->fd, pdata->memfd, bytes_used);
-		if (ret < 0)
-			goto err_close_memfd;
-
-		pdata->wait_for_err_code = true;
-		network_unlock_dev(pdata);
-	}
-
-	if (pdata->memfd >= 0)
-		close(pdata->memfd);
-
-	pdata->memfd = memfd;
-
-	ret = (ssize_t) ftruncate(pdata->memfd, pdata->mmap_len);
-	if (ret < 0) {
-		ret = -errno;
-		ERROR("Unable to truncate temp file: %zi\n", -ret);
-		return ret;
-	}
-
-	if (!pdata->is_tx) {
-		char buf[1024];
-		size_t len = pdata->mmap_len;
-
-		snprintf(buf, sizeof(buf), "READBUF %s %lu\r\n",
-				dev->id, (unsigned long) len);
-
-		network_lock_dev(pdata);
-		ret = write_rwbuf_command(dev, buf, false);
-		if (ret < 0)
-			goto err_unlock;
-
-		do {
-			ret = network_read_mask(pdata->fd, mask, words);
-			if (!ret)
-				break;
-			if (ret < 0)
-				goto err_unlock;
-
-			mask = NULL; /* We read the mask only once */
-
-			ret = network_do_splice(pdata->memfd, pdata->fd, ret);
-			if (ret < 0)
-				goto err_unlock;
-
-			read += ret;
-			len -= ret;
-		} while (len);
-
-		network_unlock_dev(pdata);
-	}
-
-	pdata->mmap_addr = mmap(NULL, pdata->mmap_len,
-			PROT_READ | PROT_WRITE, MAP_SHARED, pdata->memfd, 0);
-	if (pdata->mmap_addr == MAP_FAILED) {
-		pdata->mmap_addr = NULL;
-		ret = -errno;
-		ERROR("Unable to mmap: %zi\n", -ret);
-		return ret;
-	}
-
-	*addr_ptr = pdata->mmap_addr;
-	return read ? read : bytes_used;
-
-err_close_memfd:
-	close(memfd);
-err_unlock:
-	network_unlock_dev(pdata);
-	return ret;
-}
-#endif
 
 static ssize_t network_read_attr_helper(const struct iio_device *dev,
 		const struct iio_channel *chn, const char *attr, char *dst,
@@ -1189,9 +1018,6 @@ static struct iio_backend_ops network_ops = {
 	.close = network_close,
 	.read = network_read,
 	.write = network_write,
-#ifdef WITH_NETWORK_GET_BUFFER
-	.get_buffer = network_get_buffer,
-#endif
 	.read_device_attr = network_read_dev_attr,
 	.write_device_attr = network_write_dev_attr,
 	.read_channel_attr = network_read_chn_attr,
@@ -1364,9 +1190,6 @@ struct iio_context * network_create_context(const char *host)
 		}
 
 		dev->pdata->fd = -1;
-#ifdef WITH_NETWORK_GET_BUFFER
-		dev->pdata->memfd = -1;
-#endif
 
 #if HAVE_PTHREAD
 		ret = pthread_mutex_init(&dev->pdata->lock, NULL);
