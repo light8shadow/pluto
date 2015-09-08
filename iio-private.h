@@ -173,6 +173,9 @@ struct iio_buffer {
 
 	int splice_fd;
 	bool use_splice, splice_fd_is_socket;
+#ifdef WITH_SPLICE
+	int pipefd[2];
+#endif
 };
 
 void free_channel(struct iio_channel *chn);

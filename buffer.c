@@ -24,6 +24,10 @@
 #include <io.h>
 #include <winsock2.h>
 #else
+#ifdef WITH_SPLICE
+#include <fcntl.h>
+#include <poll.h>
+#endif
 #include <unistd.h>
 #include <sys/socket.h>
 #endif
@@ -100,6 +104,13 @@ static struct iio_buffer * create_buffer(const struct iio_device *dev,
 			goto err_free_mask;
 
 		buf->splice_fd = ret;
+#ifdef WITH_SPLICE
+		ret = pipe(buf->pipefd);
+		if (ret < 0) {
+			ret = -errno;
+			goto err_free_mask;
+		}
+#endif
 	}
 
 	/* We default to true here. If one I/O call fails with -ENOTSOCK, we
@@ -161,6 +172,12 @@ void iio_buffer_destroy(struct iio_buffer *buffer)
 	iio_device_close(buffer->dev);
 	if (!buffer->use_splice && !buffer->dev_is_high_speed)
 		free(buffer->buffer);
+#ifdef WITH_SPLICE
+	if (buffer->use_splice) {
+		close(buffer->pipefd[0]);
+		close(buffer->pipefd[1]);
+	}
+#endif
 	free(buffer->mask);
 	free(buffer);
 }
@@ -411,11 +428,76 @@ static ssize_t iio_buffer_copy(struct iio_buffer *buf, int fd, size_t len)
 	return ret;
 }
 
+#ifdef WITH_SPLICE
+static ssize_t iio_buffer_do_splice(struct iio_buffer *buf, int fd, size_t len)
+{
+	bool is_tx = iio_device_is_tx(buf->dev);
+	int fd_in, fd_out;
+	ssize_t ret, read_len = len;
+
+	fd_in = is_tx ? fd : buf->splice_fd;
+	fd_out = is_tx ? buf->splice_fd : fd;
+
+	do {
+		size_t splice_len, to_splice;
+		struct pollfd pfd = {
+			.fd = fd_in,
+			.events = POLLIN,
+		};
+
+		/* Wait for the input file descriptor to be ready */
+		ret = (ssize_t) poll(&pfd, 1, 0);
+		if (ret < 0)
+			return (ssize_t) -errno;
+
+		/*
+		 * SPLICE_F_NONBLOCK is just here to avoid a deadlock when
+		 * splicing to the pipe, that happens because the other end of
+		 * the pipe is not yet connected.
+		 *
+		 * As we first poll the input file descriptor, it should never
+		 * return -EAGAIN.
+		 */
+		ret = splice(fd_in, NULL, buf->pipefd[1], NULL, len,
+				SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+		if (!ret)
+			return -EIO;
+		if (ret < 0)
+			return -errno;
+
+		to_splice = (size_t) ret;
+
+		for (splice_len = to_splice; splice_len;
+				splice_len -= (size_t) ret) {
+			ret = splice(buf->pipefd[0], NULL,
+					fd_out, NULL, splice_len,
+					SPLICE_F_MOVE | SPLICE_F_MORE);
+			if (!ret)
+				return -EIO;
+			if (ret < 0)
+				return -errno;
+		}
+
+		len -= to_splice;
+	} while (len);
+
+	/* Splice 0 bytes without the SPLICE_F_MORE flag, to tell the kernel
+	 * that we won't splice anymore */
+	splice(buf->pipefd[0], NULL, fd_out, NULL, 0, SPLICE_F_MOVE);
+
+	return read_len;
+}
+#endif
+
 static ssize_t iio_buffer_zerocopy(struct iio_buffer *buffer,
 		int fd, size_t len, bool mask_match)
 {
 	if (!mask_match)
 		return iio_buffer_extract(buffer, fd, len);
+#ifdef WITH_SPLICE
+	else if (!isatty(fd))
+		return iio_buffer_do_splice(buffer, fd, len);
+#endif
 	else
 		return iio_buffer_copy(buffer, fd, len);
 }
