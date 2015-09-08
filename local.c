@@ -757,7 +757,7 @@ err_freemem:
 }
 
 static int local_open(const struct iio_device *dev,
-		size_t samples_count, bool cyclic)
+		size_t samples_count, bool cyclic, bool for_splice)
 {
 	unsigned int i;
 	int ret;
@@ -805,11 +805,12 @@ static int local_open(const struct iio_device *dev,
 	pdata->cyclic_buffer_enqueued = false;
 	pdata->buffer_enabled = false;
 	pdata->samples_count = samples_count;
-	pdata->is_high_speed = !enable_high_speed(dev);
+	pdata->is_high_speed = !for_splice && !enable_high_speed(dev);
 
 	if (!pdata->is_high_speed) {
 		unsigned long size = samples_count * pdata->nb_blocks;
-		WARNING("High-speed mode not enabled\n");
+		if (!for_splice)
+			WARNING("High-speed mode not enabled\n");
 
 		/* Increase the size of the kernel buffer, when using the
 		 * low-speed interface. This avoids losing samples when
@@ -822,7 +823,10 @@ static int local_open(const struct iio_device *dev,
 
 		/* NOTE: The low-speed interface will enable the buffer after
 		 * the first samples are written, or if the device is set
-		 * to non blocking-mode */
+		 * to non blocking-mode. In case of a splice buffer, we don't
+		 * have this requirement. */
+		if (for_splice)
+			local_enable_buffer(dev);
 	} else {
 		ret = local_enable_buffer(dev);
 		if (ret < 0)
@@ -868,8 +872,6 @@ static int local_get_fd(const struct iio_device *dev, bool for_poll)
 {
 	if (dev->pdata->fd == -1)
 		return -EBADF;
-	else if (!for_poll)
-		return -EPERM;
 	else
 		return dev->pdata->fd;
 }
