@@ -81,6 +81,7 @@ struct iio_context_pdata {
 struct iio_device_pdata {
 	int fd;
 	bool wait_for_err_code, is_cyclic, is_tx;
+	size_t next_splice_len;
 #if HAVE_PTHREAD
 	pthread_mutex_t lock;
 #endif
@@ -449,7 +450,7 @@ static int create_socket(const struct addrinfo *addrinfo)
 }
 
 static int network_open(const struct iio_device *dev,
-		size_t samples_count, bool cyclic)
+		size_t samples_count, bool cyclic, bool for_splice)
 {
 	struct iio_context_pdata *pdata = dev->ctx->pdata;
 	char buf[1024], *ptr;
@@ -1012,6 +1013,79 @@ static struct iio_context * network_clone(const struct iio_context *ctx)
 	return iio_create_network_context(ctx->description);
 }
 
+static ssize_t network_before_splice(const struct iio_device *dev,
+		size_t len, uint32_t *mask, size_t words)
+{
+	struct iio_device_pdata *pdata = dev->pdata;
+	ssize_t ret;
+	char buf[1024];
+
+	if (pdata->is_tx)
+		snprintf(buf, sizeof(buf), "WRITEBUF %s %lu\r\n",
+				dev->id, (unsigned long) len);
+	else
+		snprintf(buf, sizeof(buf), "READBUF %s %lu\r\n",
+				dev->id, (unsigned long) len);
+
+	network_lock_dev(pdata);
+	ret = write_rwbuf_command(dev, buf, false);
+	if (ret < 0)
+		goto err_unlock;
+
+	if (pdata->is_tx) {
+		return (ssize_t) len;
+	} else {
+		ret = network_read_mask(pdata->fd, mask, words);
+		if (ret < 0)
+			goto err_unlock;
+
+		pdata->next_splice_len = (size_t) ret;
+		return ret;
+	}
+
+err_unlock:
+	network_unlock_dev(pdata);
+	return ret;
+}
+
+static ssize_t network_get_splice_len(const struct iio_device *dev, size_t len)
+{
+	struct iio_device_pdata *pdata = dev->pdata;
+	ssize_t ret;
+
+	if (pdata->is_tx)
+		return (ssize_t) len;
+
+	ret = (ssize_t) pdata->next_splice_len;
+	if (ret) {
+		/* We already did read the next burst length once. */
+		pdata->next_splice_len = 0;
+		return ret;
+	} else {
+		return network_read_mask(pdata->fd, NULL, 0);
+	}
+}
+
+static void network_after_splice(const struct iio_device *dev)
+{
+	struct iio_device_pdata *pdata = dev->pdata;
+
+	if (pdata->is_tx)
+		pdata->wait_for_err_code = true;
+
+	network_unlock_dev(pdata);
+}
+
+static int network_get_fd(const struct iio_device *dev, bool for_poll)
+{
+	if (for_poll)
+		return -EPERM;
+	else if (dev->pdata->fd == -1)
+		return -EBADF;
+	else
+		return dev->pdata->fd;
+}
+
 static struct iio_backend_ops network_ops = {
 	.clone = network_clone,
 	.open = network_open,
@@ -1027,6 +1101,10 @@ static struct iio_backend_ops network_ops = {
 	.shutdown = network_shutdown,
 	.get_version = network_get_version,
 	.set_timeout = network_set_timeout,
+	.get_fd = network_get_fd,
+	.before_splice = network_before_splice,
+	.get_splice_len = network_get_splice_len,
+	.after_splice = network_after_splice,
 };
 
 static struct iio_context * get_context(int fd)
