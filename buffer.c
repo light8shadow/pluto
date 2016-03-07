@@ -93,7 +93,7 @@ struct iio_buffer * iio_device_create_buffer(const struct iio_device *dev,
 
 	buf->sample_size = iio_device_get_sample_size_mask(dev,
 			buf->mask, dev->words);
-	buf->data_length = buf->length;
+	iio_buffer_reset_size(buf);
 	return buf;
 
 err_close_device:
@@ -177,7 +177,7 @@ ssize_t iio_buffer_push(struct iio_buffer *buffer)
 	}
 
 out_reset_data_length:
-	buffer->data_length = buffer->length;
+	iio_buffer_reset_size(buffer);
 	return ret;
 }
 
@@ -301,4 +301,9 @@ void * iio_buffer_get_data(const struct iio_buffer *buf)
 const struct iio_device * iio_buffer_get_device(const struct iio_buffer *buf)
 {
 	return buf->dev;
+}
+
+void iio_buffer_reset_size(struct iio_buffer *buffer)
+{
+	buffer->data_length = buffer->length;
 }

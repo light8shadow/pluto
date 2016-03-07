@@ -940,6 +940,16 @@ __api ssize_t iio_buffer_push_partial(struct iio_buffer *buf,
 		size_t samples_count);
 
 
+/** @brief Reset the buffer back to its maximum size
+ * @param buf A pointer to an iio_buffer structure
+ *
+ * <b>NOTE:</b> This function can be omitted most of the time.
+ * It is only useful for buffers used both for input and output,
+ * after reading all the samples from the buffer and before writing
+ * new ones. */
+__api void iio_buffer_reset_size(struct iio_buffer *buf);
+
+
 /** @brief Get the start address of the buffer
  * @param buf A pointer to an iio_buffer structure
  * @return A pointer corresponding to the start address of the buffer */
