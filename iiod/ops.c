@@ -605,6 +605,37 @@ static uint32_t *get_mask(const char *mask, size_t *len)
 	return words;
 }
 
+static ssize_t get_sample_size_mask(const struct iio_device *dev,
+		const uint32_t *mask, size_t words)
+{
+	ssize_t size = 0;
+	unsigned int i, channels_count = iio_device_get_channels_count(dev);
+
+	if (words != (channels_count + 31) / 32)
+		return -EINVAL;
+
+	for (i = 0; i < channels_count; i++) {
+		const struct iio_channel *chn = iio_device_get_channel(dev, i);
+		const struct iio_data_format *format =
+			iio_channel_get_data_format(chn);
+		long index = iio_channel_get_index(chn);
+		unsigned int length;
+
+		if (index < 0)
+			break;
+		if (!TEST_BIT(mask, index))
+			continue;
+
+		length = format->length / 8;
+		if (size % length)
+			size += 2 * length - (size % length);
+		else
+			size += length;
+	}
+
+	return size;
+}
+
 static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
 		size_t samples_count, const char *mask, bool cyclic)
 {
@@ -648,7 +679,7 @@ static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
 	thd->mask = words;
 	thd->nb = 0;
 	thd->samples_count = samples_count;
-	thd->sample_size = iio_device_get_sample_size_mask(dev, words, len);
+	thd->sample_size = get_sample_size_mask(dev, words, len);
 	thd->pdata = pdata;
 	pthread_cond_init(&thd->cond, NULL);
 	pthread_mutex_init(&thd->cond_lock, NULL);
