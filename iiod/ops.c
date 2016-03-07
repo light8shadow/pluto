@@ -19,7 +19,7 @@
 #include "ops.h"
 #include "parser.h"
 #include "../debug.h"
-#include "../iio-private.h"
+#include "../iio.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -28,6 +28,12 @@
 #include <string.h>
 #include <sys/queue.h>
 #include <time.h>
+
+#define BIT(x) (1 << (x))
+#define BIT_MASK(bit) BIT((bit) % 32)
+#define BIT_WORD(bit) ((bit) / 32)
+#define TEST_BIT(addr, bit) (!!(*(((uint32_t *) addr) + BIT_WORD(bit)) \
+		& BIT_MASK(bit)))
 
 int yyparse(yyscan_t scanner);
 
@@ -136,7 +142,9 @@ static ssize_t send_sample(const struct iio_channel *chn,
 		void *src, size_t length, void *d)
 {
 	struct sample_cb_info *info = d;
-	if (chn->index < 0 || !TEST_BIT(info->mask, chn->index))
+	long index = iio_channel_get_index(chn);
+
+	if (index < 0 || !TEST_BIT(info->mask, index))
 		return 0;
 	if (info->nb_bytes < length)
 		return 0;
@@ -158,7 +166,9 @@ static ssize_t receive_sample(const struct iio_channel *chn,
 		void *dst, size_t length, void *d)
 {
 	struct sample_cb_info *info = d;
-	if (chn->index < 0 || !TEST_BIT(info->mask, chn->index))
+	long index = iio_channel_get_index(chn);
+
+	if (index < 0 || !TEST_BIT(info->mask, index))
 		return 0;
 	if (info->cpt == info->nb_bytes)
 		return 0;
@@ -209,7 +219,7 @@ static ssize_t send_data(struct DevEntry *dev, struct ThdEntry *thd, size_t len)
 
 	if (!demux) {
 		/* Short path */
-		return write_all(pdata, dev->buf->buffer, len);
+		return write_all(pdata, iio_buffer_start(dev->buf), len);
 	} else {
 		struct sample_cb_info info = {
 			.pdata = pdata,
@@ -235,11 +245,11 @@ static ssize_t receive_data(struct DevEntry *dev, struct ThdEntry *thd)
 	if (dev->sample_size == thd->sample_size) {
 		/* Short path: Receive directly in the buffer */
 
-		size_t len = dev->buf->length;
+		size_t len = thd->sample_size * thd->samples_count;
 		if (thd->nb < len)
 			len = thd->nb;
 
-		return read_all(pdata, dev->buf->buffer, len);
+		return read_all(pdata, iio_buffer_start(dev->buf), len);
 	} else {
 		/* Long path: Mux the samples to the buffer */
 
@@ -294,8 +304,8 @@ static void * rw_thd(void *d)
 			break;
 
 		if (entry->update_mask) {
-			unsigned int i;
-			unsigned int samples_count = 0;
+			unsigned int i, samples_count = 0;
+			unsigned int chns = iio_device_get_channels_count(dev);
 
 			memset(entry->mask, 0, nb_words * sizeof(*entry->mask));
 			SLIST_FOREACH(thd, &entry->thdlist_head, next) {
@@ -309,9 +319,11 @@ static void * rw_thd(void *d)
 			if (entry->buf)
 				iio_buffer_destroy(entry->buf);
 
-			for (i = 0; i < dev->nb_channels; i++) {
-				struct iio_channel *chn = dev->channels[i];
-				long index = chn->index;
+			for (i = 0; i < chns; i++) {
+				struct iio_channel *chn =
+					iio_device_get_channel(dev, i);
+				long index = iio_channel_get_index(chn);
+
 				if (index >= 0 && TEST_BIT(entry->mask, index))
 					iio_channel_enable(chn);
 				else
@@ -423,7 +435,7 @@ static void * rw_thd(void *d)
 			pthread_mutex_lock(&entry->thdlist_lock);
 
 			/* Reset the size of the buffer to its maximum size */
-			entry->buf->data_length = entry->buf->length;
+			iio_buffer_reset_size(entry->buf);
 
 			/* Same comment as above */
 			for (thd = SLIST_FIRST(&entry->thdlist_head);
@@ -649,7 +661,7 @@ static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
 	if (!dev)
 		return -ENODEV;
 
-	nb_channels = dev->nb_channels;
+	nb_channels = iio_device_get_channels_count(dev);
 	if (len != ((nb_channels + 31) / 32) * 8)
 		return -EINVAL;
 
@@ -968,12 +980,13 @@ ssize_t get_trigger(struct parser_pdata *pdata, struct iio_device *dev)
 
 	ret = iio_device_get_trigger(dev, &trigger);
 	if (!ret && trigger) {
+		const char *name = iio_device_get_name(trigger);
 		char buf[256];
 
-		ret = strlen(trigger->name);
+		ret = strlen(name);
 		print_value(pdata, ret);
 
-		snprintf(buf, sizeof(buf), "%s\n", trigger->name);
+		snprintf(buf, sizeof(buf), "%s\n", name);
 		ret = write_all(pdata, buf, ret + 1);
 	} else {
 		print_value(pdata, ret);
@@ -1066,6 +1079,6 @@ void interpreter(struct iio_context *ctx, int fd_in, int fd_out, bool verbose)
 	yylex_destroy(scanner);
 
 	/* Close all opened devices */
-	for (i = 0; i < ctx->nb_devices; i++)
-		close_dev_helper(&pdata, ctx->devices[i]);
+	for (i = 0; i < iio_context_get_devices_count(ctx); i++)
+		close_dev_helper(&pdata, iio_context_get_device(ctx, i));
 }
