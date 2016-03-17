@@ -66,6 +66,7 @@ struct DevEntry {
 	pthread_mutex_t last_lock;
 
 	uint32_t *mask;
+	uint32_t *tmp_mask;
 	size_t nb_words;
 };
 
@@ -273,20 +274,34 @@ static int dev_update_mask(struct DevEntry *entry)
 	unsigned int nb_words = entry->nb_words;
 	struct iio_device *dev = entry->dev;
 	unsigned int samples_count = 0;
+	uint32_t *mask = entry->tmp_mask;
 	struct ThdEntry *thd;
 	unsigned int i;
 
-	memset(entry->mask, 0, nb_words * sizeof(*entry->mask));
+	memset(mask, 0, nb_words * sizeof(*mask));
 	SLIST_FOREACH(thd, &entry->thdlist_head, next) {
 		for (i = 0; i < nb_words; i++)
-			entry->mask[i] |= thd->mask[i];
+			mask[i] |= thd->mask[i];
 
 		if (thd->samples_count > samples_count)
 			samples_count = thd->samples_count;
 	}
 
-	if (entry->buf)
+	if (entry->buf) {
+		for (i = 0; i < nb_words; i++) {
+			if (entry->mask[i] != mask[i])
+				break;
+		}
+
+		/* Mask is still the same we can continue to use the same buffer */
+		if (i == nb_words)
+			return 0;
+
 		iio_buffer_destroy(entry->buf);
+	}
+
+	entry->tmp_mask = entry->mask;
+	entry->mask = mask;
 
 	for (i = 0; i < dev->nb_channels; i++) {
 		struct iio_channel *chn = dev->channels[i];
@@ -515,6 +530,7 @@ static void * rw_thd(void *d)
 	pthread_attr_destroy(&entry->attr);
 
 	free(entry->mask);
+	free(entry->tmp_mask);
 	free(entry);
 	return NULL;
 }
@@ -684,6 +700,9 @@ static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
 	entry->mask = malloc(len * sizeof(*words));
 	if (!entry->mask)
 		goto err_free_entry;
+	entry->tmp_mask = malloc(len * sizeof(*words));
+	if (!entry->mask)
+		goto err_free_entry_mask;
 
 	entry->cyclic = cyclic;
 	entry->nb_words = len;
@@ -703,7 +722,7 @@ static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
 
 	ret = pthread_create(&entry->thd, &entry->attr, rw_thd, entry);
 	if (ret)
-		goto err_free_entry_mask;
+		goto err_free_entry_tmp_mask;
 
 	DEBUG("Adding new device thread to device list\n");
 	SLIST_INSERT_HEAD(&devlist_head, entry, next);
@@ -714,6 +733,8 @@ static int open_dev_helper(struct parser_pdata *pdata, struct iio_device *dev,
 	pthread_mutex_unlock(&thd->cond_lock);
 	return (int) thd->err;
 
+err_free_entry_tmp_mask:
+	free(entry->tmp_mask);
 err_free_entry_mask:
 	free(entry->mask);
 err_free_entry:
