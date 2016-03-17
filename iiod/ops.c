@@ -268,12 +268,56 @@ static void signal_thread(struct ThdEntry *thd, ssize_t ret)
 	pthread_mutex_unlock(&thd->cond_lock);
 }
 
+static int dev_update_mask(struct DevEntry *entry)
+{
+	unsigned int nb_words = entry->nb_words;
+	struct iio_device *dev = entry->dev;
+	unsigned int samples_count = 0;
+	struct ThdEntry *thd;
+	unsigned int i;
+
+	memset(entry->mask, 0, nb_words * sizeof(*entry->mask));
+	SLIST_FOREACH(thd, &entry->thdlist_head, next) {
+		for (i = 0; i < nb_words; i++)
+			entry->mask[i] |= thd->mask[i];
+
+		if (thd->samples_count > samples_count)
+			samples_count = thd->samples_count;
+	}
+
+	if (entry->buf)
+		iio_buffer_destroy(entry->buf);
+
+	for (i = 0; i < dev->nb_channels; i++) {
+		struct iio_channel *chn = dev->channels[i];
+		long index = chn->index;
+		if (index >= 0 && TEST_BIT(entry->mask, index))
+			iio_channel_enable(chn);
+		else
+			iio_channel_disable(chn);
+	}
+
+	entry->buf = iio_device_create_buffer(dev,
+			samples_count, entry->cyclic);
+	if (!entry->buf) {
+		ERROR("Unable to create buffer\n");
+		return -errno;
+	}
+
+	DEBUG("IIO device %s reopened with new mask:\n",
+			dev->id);
+	for (i = 0; i < nb_words; i++)
+		DEBUG("Mask[%i] = 0x%08x\n", i, entry->mask[i]);
+
+	entry->sample_size = iio_device_get_sample_size(dev);
+
+	return 0;
+}
+
 static void * rw_thd(void *d)
 {
 	struct DevEntry *entry = d;
 	struct ThdEntry *thd, *next_thd;
-	struct iio_device *dev = entry->dev;
-	unsigned int nb_words = entry->nb_words;
 	ssize_t ret = 0;
 	bool had_readers = false;
 
@@ -294,38 +338,9 @@ static void * rw_thd(void *d)
 			break;
 
 		if (entry->update_mask) {
-			unsigned int i;
-			unsigned int samples_count = 0;
-
-			memset(entry->mask, 0, nb_words * sizeof(*entry->mask));
-			SLIST_FOREACH(thd, &entry->thdlist_head, next) {
-				for (i = 0; i < nb_words; i++)
-					entry->mask[i] |= thd->mask[i];
-
-				if (thd->samples_count > samples_count)
-					samples_count = thd->samples_count;
-			}
-
-			if (entry->buf)
-				iio_buffer_destroy(entry->buf);
-
-			for (i = 0; i < dev->nb_channels; i++) {
-				struct iio_channel *chn = dev->channels[i];
-				long index = chn->index;
-				if (index >= 0 && TEST_BIT(entry->mask, index))
-					iio_channel_enable(chn);
-				else
-					iio_channel_disable(chn);
-			}
-
-			entry->buf = iio_device_create_buffer(dev,
-					samples_count, entry->cyclic);
-			if (!entry->buf) {
-				ret = -errno;
-				ERROR("Unable to create buffer\n");
+			ret = dev_update_mask(entry);
+			if (ret)
 				break;
-			}
-
 			/* Signal the threads that we opened the device */
 			SLIST_FOREACH(thd, &entry->thdlist_head, next) {
 				if (thd->wait_for_open) {
@@ -334,14 +349,7 @@ static void * rw_thd(void *d)
 				}
 			}
 
-			DEBUG("IIO device %s reopened with new mask:\n",
-					dev->id);
-			for (i = 0; i < nb_words; i++)
-				DEBUG("Mask[%i] = 0x%08x\n", i, entry->mask[i]);
 			entry->update_mask = false;
-
-			entry->sample_size = iio_device_get_sample_size(dev);
-			mask_updated = true;
 		}
 
 		sample_size = entry->sample_size;
