@@ -414,14 +414,17 @@ static int network_open(const struct iio_device *dev,
 		goto out_mutex_unlock;
 
 	ret = create_socket(pdata->addrinfo);
-	if (ret < 0)
+	if (ret < 0) {
+		ERROR("Create socket: %d\n", ret);
 		goto out_mutex_unlock;
+	}
 
 	fd = ret;
 
 	ret = iiod_client_open_unlocked(pdata->iiod_client, fd,
 			dev, samples_count, cyclic);
 	if (ret < 0) {
+		ERROR("Opend unlocked: %d\n", ret);
 		close(fd);
 		goto out_mutex_unlock;
 	}
@@ -506,8 +509,10 @@ static ssize_t read_all(void *dst, size_t len, int fd)
 	uintptr_t ptr = (uintptr_t) dst;
 	while (len) {
 		ssize_t ret = network_recv(fd, (void *) ptr, len, 0);
-		if (ret < 0)
+		if (ret < 0) {
+			ERROR("NETWORK RECV: %zd\n", ret);
 			return ret;
+		}
 		ptr += ret;
 		len -= ret;
 	}
@@ -548,8 +553,10 @@ static ssize_t network_read_mask(int fd, uint32_t *mask, size_t words)
 	ssize_t ret;
 
 	ret = read_integer(fd, &read_len);
-	if (ret < 0)
+	if (ret < 0) {
+		ERROR("READ INTEGER: %zd\n", ret);
 		return ret;
+	}
 
 	if (read_len > 0 && mask) {
 		size_t i;
@@ -967,8 +974,11 @@ static ssize_t network_read_line(struct iio_context_pdata *pdata,
 	for (i = 0; i < (size_t) ret && dst[i] != '\n'; i++);
 
 	/* No \n found? Just garbage data */
-	if (i == (size_t) ret)
+	if (i == (size_t) ret) {
+		dst[i+1] = '\0';
+		printf("EIO: '%s'\n", dst);
 		return -EIO;
+	}
 
 	/* Advance the read offset to the byte following the \n */
 	return network_recv(desc, dst, i + 1, MSG_TRUNC);

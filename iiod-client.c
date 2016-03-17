@@ -24,8 +24,10 @@ static ssize_t iiod_client_read_integer(struct iiod_client *client,
 	do {
 		ret = client->ops->read_line(client->pdata,
 				desc, buf, sizeof(buf));
-		if (ret < 0)
+		if (ret < 0) {
+			ERROR("READ LINE: %d\n", ret);
 			return ret;
+		}
 
 		for (i = 0; i < (unsigned int) ret; i++) {
 			if (buf[i] != '\n') {
@@ -480,9 +482,10 @@ static int iiod_client_read_mask(struct iiod_client *client,
 		return -ENOMEM;
 
 	ret = iiod_client_read_all(client, desc, buf, words * 8 + 1);
-	if (ret < 0)
+	if (ret < 0) {
+		ERROR("READ ALL: %d\n", ret);
 		goto out_buf_free;
-	else
+	} else
 		ret = 0;
 
 	buf[words*8] = '\0';
@@ -517,29 +520,37 @@ ssize_t iiod_client_read_unlocked(struct iiod_client *client, int desc,
 			iio_device_get_id(dev), (unsigned long) len);
 
 	ret = iiod_client_write_all(client, desc, buf, strlen(buf));
-	if (ret < 0)
+	if (ret < 0) {
+		ERROR("WRITE ALL: %d\n", ret);
 		return ret;
+	}
 
 	do {
 		int to_read;
 
 		ret = iiod_client_read_integer(client, desc, &to_read);
-		if (ret < 0)
+		if (ret < 0) {
+			ERROR("READ INTEGER: %d\n", ret);
 			return ret;
+		}
 		if (!to_read)
 			break;
 
 		if (mask) {
 			ret = iiod_client_read_mask(client, desc, mask, words);
-			if (ret < 0)
+			if (ret < 0) {
+				ERROR("READ MASK: %d\n", ret);
 				return ret;
+			}
 
 			mask = NULL; /* We read the mask only once */
 		}
 
 		ret = iiod_client_read_all(client, desc, (char *) ptr, to_read);
-		if (ret < 0)
+		if (ret < 0) {
+			ERROR("READ ALL: %d\n", ret);
 			return ret;
+		}
 
 		ptr += ret;
 		read += ret;
