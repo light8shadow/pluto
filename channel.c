@@ -38,6 +38,52 @@
 #define _strdup strdup
 #endif
 
+static const char * const iio_chan_type_name_spec[] = {
+	[IIO_VOLTAGE] = "voltage",
+	[IIO_CURRENT] = "current",
+	[IIO_POWER] = "power",
+	[IIO_ACCEL] = "accel",
+	[IIO_ANGL_VEL] = "anglvel",
+	[IIO_MAGN] = "magn",
+	[IIO_LIGHT] = "illuminance",
+	[IIO_INTENSITY] = "intensity",
+	[IIO_PROXIMITY] = "proximity",
+	[IIO_TEMP] = "temp",
+	[IIO_INCLI] = "incli",
+	[IIO_ROT] = "rot",
+	[IIO_ANGL] = "angl",
+	[IIO_TIMESTAMP] = "timestamp",
+	[IIO_CAPACITANCE] = "capacitance",
+	[IIO_ALTVOLTAGE] = "altvoltage",
+	[IIO_CCT] = "cct",
+	[IIO_PRESSURE] = "pressure",
+	[IIO_HUMIDITYRELATIVE] = "humidityrelative",
+	[IIO_ACTIVITY] = "activity",
+	[IIO_STEPS] = "steps",
+	[IIO_ENERGY] = "energy",
+	[IIO_DISTANCE] = "distance",
+	[IIO_VELOCITY] = "velocity",
+	[IIO_CONCENTRATION] = "concentration",
+	[IIO_RESISTANCE] = "resistance",
+};
+
+void iio_channel_init_type(struct iio_channel *chn)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(iio_chan_type_name_spec); i++) {
+		if (!iio_chan_type_name_spec[i])
+			continue;
+		if (strncmp(iio_chan_type_name_spec[i], chn->id,
+			strlen(iio_chan_type_name_spec[i])) == 0) {
+			chn->type = i;
+			return;
+		}
+	}
+
+	chn->type = IIO_UNKNOWN;
+}
+
 static char *get_attr_xml(struct iio_channel_attr *attr, size_t *length)
 {
 	char *str;
@@ -180,6 +226,11 @@ bool iio_channel_is_output(const struct iio_channel *chn)
 bool iio_channel_is_scan_element(const struct iio_channel *chn)
 {
 	return chn->is_scan_element;
+}
+
+enum iio_chan_type iio_channel_get_type(const struct iio_channel *chn)
+{
+	return chn->type;
 }
 
 unsigned int iio_channel_get_attrs_count(const struct iio_channel *chn)

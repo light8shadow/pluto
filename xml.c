@@ -194,6 +194,8 @@ static struct iio_channel * create_channel(struct iio_device *dev, xmlNode *n)
 		}
 	}
 
+	iio_channel_init_type(chn);
+
 	return chn;
 
 err_free_channel:

@@ -66,6 +66,38 @@ struct iio_channel;
 struct iio_buffer;
 
 
+enum iio_chan_type {
+	IIO_VOLTAGE,
+	IIO_CURRENT,
+	IIO_POWER,
+	IIO_ACCEL,
+	IIO_ANGL_VEL,
+	IIO_MAGN,
+	IIO_LIGHT,
+	IIO_INTENSITY,
+	IIO_PROXIMITY,
+	IIO_TEMP,
+	IIO_INCLI,
+	IIO_ROT,
+	IIO_ANGL,
+	IIO_TIMESTAMP,
+	IIO_CAPACITANCE,
+	IIO_ALTVOLTAGE,
+	IIO_CCT,
+	IIO_PRESSURE,
+	IIO_HUMIDITYRELATIVE,
+	IIO_ACTIVITY,
+	IIO_STEPS,
+	IIO_ENERGY,
+	IIO_DISTANCE,
+	IIO_VELOCITY,
+	IIO_CONCENTRATION,
+	IIO_RESISTANCE,
+	IIO_PH,
+};
+
+#define IIO_UNKNOWN (~0U)
+
 /* ---------------------------------------------------------------------------*/
 /* ------------------------- Top-level functions -----------------------------*/
 /** @defgroup TopLevel Top-level functions
@@ -852,6 +884,12 @@ __api void iio_channel_set_data(struct iio_channel *chn, void *data);
  * @param chn A pointer to an iio_channel structure
  * @return The pointer previously associated if present, or NULL */
 __api void * iio_channel_get_data(const struct iio_channel *chn);
+
+
+/** @brief Get the type of the given channel
+ * @param chn A pointer to an iio_channel structure
+ * @return The type of the channel */
+__api enum iio_chan_type iio_channel_get_type(const struct iio_channel *chn);
 
 
 /** @} *//* ------------------------------------------------------------------*/
