@@ -65,6 +65,42 @@ struct iio_device;
 struct iio_channel;
 struct iio_buffer;
 
+enum iio_modifier {
+	IIO_NO_MOD,
+	IIO_MOD_X,
+	IIO_MOD_Y,
+	IIO_MOD_Z,
+	IIO_MOD_X_AND_Y,
+	IIO_MOD_X_AND_Z,
+	IIO_MOD_Y_AND_Z,
+	IIO_MOD_X_AND_Y_AND_Z,
+	IIO_MOD_X_OR_Y,
+	IIO_MOD_X_OR_Z,
+	IIO_MOD_Y_OR_Z,
+	IIO_MOD_X_OR_Y_OR_Z,
+	IIO_MOD_LIGHT_BOTH,
+	IIO_MOD_LIGHT_IR,
+	IIO_MOD_ROOT_SUM_SQUARED_X_Y,
+	IIO_MOD_SUM_SQUARED_X_Y_Z,
+	IIO_MOD_LIGHT_CLEAR,
+	IIO_MOD_LIGHT_RED,
+	IIO_MOD_LIGHT_GREEN,
+	IIO_MOD_LIGHT_BLUE,
+	IIO_MOD_QUATERNION,
+	IIO_MOD_TEMP_AMBIENT,
+	IIO_MOD_TEMP_OBJECT,
+	IIO_MOD_NORTH_MAGN,
+	IIO_MOD_NORTH_TRUE,
+	IIO_MOD_NORTH_MAGN_TILT_COMP,
+	IIO_MOD_NORTH_TRUE_TILT_COMP,
+	IIO_MOD_RUNNING,
+	IIO_MOD_JOGGING,
+	IIO_MOD_WALKING,
+	IIO_MOD_STILL,
+	IIO_MOD_ROOT_SUM_SQUARED_X_Y_Z,
+	IIO_MOD_I,
+	IIO_MOD_Q,
+};
 
 enum iio_chan_type {
 	IIO_VOLTAGE,
@@ -890,6 +926,12 @@ __api void * iio_channel_get_data(const struct iio_channel *chn);
  * @param chn A pointer to an iio_channel structure
  * @return The type of the channel */
 __api enum iio_chan_type iio_channel_get_type(const struct iio_channel *chn);
+
+
+/** @brief Get the modifier type of the given channel
+ * @param chn A pointer to an iio_channel structure
+ * @return The modifier type of the channel */
+__api enum iio_modifier iio_channel_get_modifier(const struct iio_channel *chn);
 
 
 /** @} *//* ------------------------------------------------------------------*/
