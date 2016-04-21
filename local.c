@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -91,6 +92,8 @@ struct iio_device_pdata {
 	void **addrs;
 	int last_dequeued;
 	bool is_high_speed, cyclic, cyclic_buffer_enqueued, buffer_enabled;
+
+	int cancel_fd;
 };
 
 static const char * const device_attrs_blacklist[] = {
@@ -285,9 +288,14 @@ static int get_rel_timeout_ms(struct timespec *start, unsigned int timeout_rel)
 static int device_check_ready(const struct iio_device *dev, short events,
 	struct timespec *start)
 {
-	struct pollfd pollfd = {
-		.fd = dev->pdata->fd,
-		.events = events,
+	struct pollfd pollfd[2] = {
+		{
+			.fd = dev->pdata->fd,
+			.events = events,
+		}, {
+			.fd = dev->pdata->cancel_fd,
+			.events = POLLIN,
+		}
 	};
 	unsigned int rw_timeout_ms = dev->ctx->pdata->rw_timeout_ms;
 	int timeout_rel;
@@ -298,16 +306,19 @@ static int device_check_ready(const struct iio_device *dev, short events,
 
 	do {
 		timeout_rel = get_rel_timeout_ms(start, rw_timeout_ms);
-		ret = poll(&pollfd, 1, timeout_rel);
+		ret = poll(pollfd, 2, timeout_rel);
 	} while (ret == -1 && errno == EINTR);
+
+	if ((pollfd[1].revents & POLLIN))
+		return -EBADF;
 
 	if (ret < 0)
 		return -errno;
 	if (!ret)
 		return -ETIMEDOUT;
-	if (pollfd.revents & POLLNVAL)
+	if (pollfd[0].revents & POLLNVAL)
 		return -EBADF;
-	if (!(pollfd.revents & events))
+	if (!(pollfd[0].revents & events))
 		return -EIO;
 	return 0;
 }
@@ -842,10 +853,16 @@ static int local_open(const struct iio_device *dev,
 	if (ret < 0)
 		return ret;
 
+	pdata->cancel_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (pdata->cancel_fd == -1)
+		return -errno;
+
 	snprintf(buf, sizeof(buf), "/dev/%s", dev->id);
 	pdata->fd = open(buf, O_RDWR | O_CLOEXEC | O_NONBLOCK);
-	if (pdata->fd == -1)
-		return -errno;
+	if (pdata->fd == -1) {
+		ret = -errno;
+		goto err_close_cancel_fd;
+	}
 
 	/* Disable channels */
 	for (i = 0; i < dev->nb_channels; i++) {
@@ -898,6 +915,9 @@ static int local_open(const struct iio_device *dev,
 err_close:
 	close(pdata->fd);
 	pdata->fd = -1;
+err_close_cancel_fd:
+	close(pdata->cancel_fd);
+	pdata->cancel_fd = -1; 
 	return ret;
 }
 
@@ -923,6 +943,8 @@ static int local_close(const struct iio_device *dev)
 	ret = close(pdata->fd);
 	if (ret)
 		return ret;
+
+	close(pdata->cancel_fd);
 
 	pdata->fd = -1;
 	ret = local_write_dev_attr(dev, "buffer/enable", "0", 2, false);
@@ -1542,6 +1564,14 @@ static int local_set_timeout(struct iio_context *ctx, unsigned int timeout)
 	return 0;
 }
 
+static void local_cancel(const struct iio_device *dev)
+{
+	struct iio_device_pdata *pdata = dev->pdata;
+	uint64_t event = 1;
+
+	write(pdata->cancel_fd, &event, sizeof(event));
+}
+
 static struct iio_context * local_clone(
 		const struct iio_context *ctx __attribute__((unused)))
 {
@@ -1566,6 +1596,7 @@ static const struct iio_backend_ops local_ops = {
 	.set_trigger = local_set_trigger,
 	.shutdown = local_shutdown,
 	.set_timeout = local_set_timeout,
+	.cancel = local_cancel,
 };
 
 static void init_index(struct iio_channel *chn)
