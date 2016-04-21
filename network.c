@@ -69,6 +69,7 @@ struct iio_context_pdata {
 	struct addrinfo *addrinfo;
 	struct iio_mutex *lock;
 	struct iiod_client *iiod_client;
+	unsigned int rw_timeout_ms;
 };
 
 struct iio_device_pdata {
@@ -386,19 +387,26 @@ static int set_socket_timeout(int fd, unsigned int timeout)
 }
 #endif /* !_WIN32 */
 
-static int create_socket(const struct addrinfo *addrinfo)
+static unsigned int calculate_remote_timeout(unsigned int timeout)
+{
+	/* XXX(pcercuei): We currently hardcode timeout / 2 for the backend used
+	 * by the remote. Is there something better to do here? */
+	return timeout / 2;
+}
+
+static int create_socket(const struct addrinfo *addrinfo, unsigned int timeout_ms)
 {
 	struct timeval timeout;
 	int fd, yes = 1;
 
-	timeout.tv_sec = DEFAULT_TIMEOUT_MS / 1000;
-	timeout.tv_usec = (DEFAULT_TIMEOUT_MS % 1000) * 1000;
+	timeout.tv_sec = timeout_ms / 1000;
+	timeout.tv_usec = (timeout_ms % 1000) * 1000;
 
 	fd = do_connect(addrinfo, &timeout);
 	if (fd < 0)
 		return fd;
 
-	set_socket_timeout(fd, DEFAULT_TIMEOUT_MS);
+	set_socket_timeout(fd, timeout_ms);
 	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
 			(const char *) &yes, sizeof(yes));
 	return fd;
@@ -415,11 +423,14 @@ static int network_open(const struct iio_device *dev,
 	if (ppdata->fd >= 0)
 		goto out_mutex_unlock;
 
-	ret = create_socket(pdata->addrinfo);
+	ret = create_socket(pdata->addrinfo, pdata->rw_timeout_ms);
 	if (ret < 0)
 		goto out_mutex_unlock;
 
 	fd = ret;
+
+	iiod_client_set_timeout(pdata->iiod_client, fd,
+			calculate_remote_timeout(pdata->rw_timeout_ms));
 
 	ret = iiod_client_open_unlocked(pdata->iiod_client, fd,
 			dev, samples_count, cyclic);
@@ -867,17 +878,12 @@ static int network_get_version(const struct iio_context *ctx,
 			major, minor, git_tag);
 }
 
-static unsigned int calculate_remote_timeout(unsigned int timeout)
-{
-	/* XXX(pcercuei): We currently hardcode timeout / 2 for the backend used
-	 * by the remote. Is there something better to do here? */
-	return timeout / 2;
-}
-
 static int network_set_timeout(struct iio_context *ctx, unsigned int timeout)
 {
 	struct iio_context_pdata *pdata = ctx->pdata;
 	int ret, fd = pdata->fd;
+
+	pdata->rw_timeout_ms = timeout;
 
 	ret = set_socket_timeout(fd, timeout);
 	if (!ret) {
@@ -1060,7 +1066,7 @@ struct iio_context * network_create_context(const char *host)
 		return NULL;
 	}
 
-	fd = create_socket(res);
+	fd = create_socket(res, DEFAULT_TIMEOUT_MS);
 	if (fd < 0) {
 		errno = fd;
 		goto err_free_addrinfo;
@@ -1074,6 +1080,7 @@ struct iio_context * network_create_context(const char *host)
 
 	pdata->fd = fd;
 	pdata->addrinfo = res;
+	pdata->rw_timeout_ms = DEFAULT_TIMEOUT_MS;
 
 	pdata->lock = iio_mutex_create();
 	if (!pdata->lock) {
