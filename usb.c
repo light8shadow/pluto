@@ -40,6 +40,8 @@ struct iio_usb_io_context {
 	int ep;
 
 	struct iio_mutex *lock;
+	bool cancelled;
+	struct libusb_transfer *transfer;
 };
 
 struct iio_usb_io_endpoint {
@@ -226,6 +228,8 @@ static int usb_open(const struct iio_device *dev,
 	int ret = -EBUSY;
 
 	iio_mutex_lock(ctx_pdata->ep_lock);
+
+	pdata->io_ctx.cancelled = false;
 
 	if (pdata->opened)
 		goto out_unlock;
@@ -418,6 +422,17 @@ static void usb_shutdown(struct iio_context *ctx)
 	free(ctx->pdata);
 }
 
+static void usb_cancel(const struct iio_device *dev)
+{
+	struct iio_device_pdata *ppdata = dev->pdata;
+
+	iio_mutex_lock(ppdata->io_ctx.lock);
+	if (ppdata->io_ctx.transfer)
+		libusb_cancel_transfer(ppdata->io_ctx.transfer);
+	ppdata->io_ctx.cancelled = true;
+	iio_mutex_unlock(ppdata->io_ctx.lock);
+}
+
 static const struct iio_backend_ops usb_ops = {
 	.get_version = usb_get_version,
 	.open = usb_open,
@@ -431,6 +446,8 @@ static const struct iio_backend_ops usb_ops = {
 	.set_kernel_buffers_count = usb_set_kernel_buffers_count,
 	.set_timeout = usb_set_timeout,
 	.shutdown = usb_shutdown,
+
+	.cancel = usb_cancel,
 };
 
 static void LIBUSB_CALL sync_transfer_cb(struct libusb_transfer *transfer)
@@ -447,9 +464,23 @@ static int usb_sync_transfer(struct iio_context_pdata *pdata,
 	int completed = 0;
 	int ret;
 
+	/*
+	 * For cancellation support the check whether the buffer has already been
+	 * cancelled and the allocation as well as the assignment of the new
+	 * transfer needs to happen in one atomic step. Otherwise it is possible
+	 * that the cancellation is missed and transfer is not aborted.
+	 */
+	iio_mutex_lock(io_ctx->lock);
+	if (io_ctx->cancelled) {
+		ret = -EBADF;
+		goto unlock;
+	}
+
 	transfer = libusb_alloc_transfer(0);
-	if (!transfer)
-		return -ENOMEM;
+	if (!transfer) {
+		ret = -ENOMEM;
+		goto unlock;
+	}
 
 	transfer->user_data = &completed;
 
@@ -461,8 +492,14 @@ static int usb_sync_transfer(struct iio_context_pdata *pdata,
 	ret = libusb_submit_transfer(transfer);
 	if (ret < 0) {
 		libusb_free_transfer(transfer);
-		return ret;
+		goto unlock;
 	}
+
+	io_ctx->transfer = transfer;
+unlock:
+	iio_mutex_unlock(io_ctx->lock);
+	if (ret)
+		return ret;
 
 	while (!completed) {
 		ret = libusb_handle_events_completed(pdata->ctx, &completed);
@@ -501,6 +538,10 @@ static int usb_sync_transfer(struct iio_context_pdata *pdata,
 		ret = -EIO;
 		break;
 	}
+
+	iio_mutex_lock(io_ctx->lock);
+	io_ctx->transfer = NULL;
+	iio_mutex_unlock(io_ctx->lock);
 
 	libusb_free_transfer(transfer);
 
