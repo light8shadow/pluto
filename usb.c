@@ -36,6 +36,14 @@
 /* Endpoint for non-streaming operations */
 #define EP_OPS		1
 
+struct iio_usb_io_context {
+	int ep;
+
+	struct iio_mutex *lock;
+	bool cancelled;
+	struct libusb_transfer *transfer;
+};
+
 struct iio_usb_io_endpoint {
 	unsigned char address;
 	bool in_use;
@@ -59,13 +67,15 @@ struct iio_context_pdata {
 	unsigned int nb_io_endpoints;
 
 	unsigned int timeout_ms;
+
+	struct iio_usb_io_context io_ctx;
 };
 
 struct iio_device_pdata {
 	struct iio_mutex *lock;
 
 	bool opened;
-	unsigned int ep;
+	struct iio_usb_io_context io_ctx;
 };
 
 static const unsigned int libusb_to_errno_codes[] = {
@@ -104,11 +114,26 @@ static unsigned int libusb_to_errno(int error)
 	}
 }
 
+static int usb_io_context_init(struct iio_usb_io_context *io_ctx)
+{
+	io_ctx->lock = iio_mutex_create();
+	if (!io_ctx->lock)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static void usb_io_context_exit(struct iio_usb_io_context *io_ctx)
+{
+	if (io_ctx->lock)
+		iio_mutex_destroy(io_ctx->lock);
+}
+
 static int usb_get_version(const struct iio_context *ctx,
 		unsigned int *major, unsigned int *minor, char git_tag[8])
 {
 	return iiod_client_get_version(ctx->pdata->iiod_client,
-			EP_OPS, major, minor, git_tag);
+			(uintptr_t) &ctx->pdata->io_ctx, major, minor, git_tag);
 }
 
 static unsigned int usb_calculate_remote_timeout(unsigned int timeout)
@@ -171,7 +196,7 @@ static int usb_reserve_ep_unlocked(const struct iio_device *dev)
 		if (!ep->in_use) {
 			ep->in_use = true;
 
-			dev->pdata->ep = ep->address;
+			dev->pdata->io_ctx.ep = ep->address;
 			dev->pdata->lock = ep->lock;
 			return 0;
 		}
@@ -204,6 +229,8 @@ static int usb_open(const struct iio_device *dev,
 
 	iio_mutex_lock(ctx_pdata->ep_lock);
 
+	pdata->io_ctx.cancelled = false;
+
 	if (pdata->opened)
 		goto out_unlock;
 
@@ -211,7 +238,7 @@ static int usb_open(const struct iio_device *dev,
 	if (ret)
 		goto out_unlock;
 
-	ret = usb_open_pipe(ctx_pdata->hdl, pdata->ep);
+	ret = usb_open_pipe(ctx_pdata->hdl, pdata->io_ctx.ep);
 	if (ret) {
 		char err_str[1024];
 
@@ -224,14 +251,14 @@ static int usb_open(const struct iio_device *dev,
 	iio_mutex_lock(pdata->lock);
 
 	ret = iiod_client_open_unlocked(ctx_pdata->iiod_client,
-			pdata->ep, dev, samples_count, cyclic);
+			(uintptr_t) &pdata->io_ctx, dev, samples_count, cyclic);
 
 	if (!ret) {
 		unsigned int remote_timeout =
 			usb_calculate_remote_timeout(ctx_pdata->timeout_ms);
 
 		ret = iiod_client_set_timeout(ctx_pdata->iiod_client,
-				pdata->ep, remote_timeout);
+				(uintptr_t) &pdata->io_ctx, remote_timeout);
 	}
 
 	pdata->opened = !ret;
@@ -239,7 +266,7 @@ static int usb_open(const struct iio_device *dev,
 	iio_mutex_unlock(pdata->lock);
 
 	if (ret) {
-		usb_close_pipe(ctx_pdata->hdl, pdata->ep);
+		usb_close_pipe(ctx_pdata->hdl, pdata->io_ctx.ep);
 		usb_free_ep_unlocked(dev);
 	}
 
@@ -260,12 +287,12 @@ static int usb_close(const struct iio_device *dev)
 
 	iio_mutex_lock(pdata->lock);
 	ret = iiod_client_close_unlocked(ctx_pdata->iiod_client,
-			pdata->ep, dev);
+			(uintptr_t) &pdata->io_ctx, dev);
 	pdata->opened = false;
 
 	iio_mutex_unlock(pdata->lock);
 
-	usb_close_pipe(ctx_pdata->hdl, pdata->ep);
+	usb_close_pipe(ctx_pdata->hdl, pdata->io_ctx.ep);
 
 	usb_free_ep_unlocked(dev);
 
@@ -282,7 +309,7 @@ static ssize_t usb_read(const struct iio_device *dev, void *dst, size_t len,
 
 	iio_mutex_lock(pdata->lock);
 	ret = iiod_client_read_unlocked(dev->ctx->pdata->iiod_client,
-			pdata->ep, dev, dst, len, mask, words);
+			(uintptr_t) &pdata->io_ctx, dev, dst, len, mask, words);
 	iio_mutex_unlock(pdata->lock);
 
 	return ret;
@@ -296,7 +323,7 @@ static ssize_t usb_write(const struct iio_device *dev,
 
 	iio_mutex_lock(pdata->lock);
 	ret = iiod_client_write_unlocked(dev->ctx->pdata->iiod_client,
-			pdata->ep, dev, src, len);
+			(uintptr_t) &pdata->io_ctx, dev, src, len);
 	iio_mutex_unlock(pdata->lock);
 
 	return ret;
@@ -307,8 +334,9 @@ static ssize_t usb_read_dev_attr(const struct iio_device *dev,
 {
 	struct iio_context_pdata *pdata = dev->ctx->pdata;
 
-	return iiod_client_read_attr(pdata->iiod_client, EP_OPS, dev,
-			NULL, attr, dst, len, is_debug);
+	return iiod_client_read_attr(pdata->iiod_client,
+			(uintptr_t) &pdata->io_ctx, dev, NULL, attr,
+			dst, len, is_debug);
 }
 
 static ssize_t usb_write_dev_attr(const struct iio_device *dev,
@@ -316,8 +344,9 @@ static ssize_t usb_write_dev_attr(const struct iio_device *dev,
 {
 	struct iio_context_pdata *pdata = dev->ctx->pdata;
 
-	return iiod_client_write_attr(pdata->iiod_client, EP_OPS, dev,
-			NULL, attr, src, len, is_debug);
+	return iiod_client_write_attr(pdata->iiod_client,
+			(uintptr_t) &pdata->io_ctx, dev, NULL, attr,
+			src, len, is_debug);
 }
 
 static ssize_t usb_read_chn_attr(const struct iio_channel *chn,
@@ -325,8 +354,9 @@ static ssize_t usb_read_chn_attr(const struct iio_channel *chn,
 {
 	struct iio_context_pdata *pdata = chn->dev->ctx->pdata;
 
-	return iiod_client_read_attr(pdata->iiod_client, EP_OPS, chn->dev,
-			chn, attr, dst, len, false);
+	return iiod_client_read_attr(pdata->iiod_client,
+			(uintptr_t) &pdata->io_ctx, chn->dev, chn, attr,
+			dst, len, false);
 }
 
 static ssize_t usb_write_chn_attr(const struct iio_channel *chn,
@@ -334,8 +364,9 @@ static ssize_t usb_write_chn_attr(const struct iio_channel *chn,
 {
 	struct iio_context_pdata *pdata = chn->dev->ctx->pdata;
 
-	return iiod_client_write_attr(pdata->iiod_client, EP_OPS, chn->dev,
-			chn, attr, src, len, false);
+	return iiod_client_write_attr(pdata->iiod_client,
+			(uintptr_t) &pdata->io_ctx, chn->dev, chn, attr,
+			src, len, false);
 }
 
 static int usb_set_kernel_buffers_count(const struct iio_device *dev,
@@ -344,7 +375,7 @@ static int usb_set_kernel_buffers_count(const struct iio_device *dev,
 	struct iio_context_pdata *pdata = dev->ctx->pdata;
 
 	return iiod_client_set_kernel_buffers_count(pdata->iiod_client,
-			EP_OPS, dev, nb_blocks);
+			 (uintptr_t) &pdata->io_ctx, dev, nb_blocks);
 }
 
 static int usb_set_timeout(struct iio_context *ctx, unsigned int timeout)
@@ -354,7 +385,7 @@ static int usb_set_timeout(struct iio_context *ctx, unsigned int timeout)
 	int ret;
 
 	ret = iiod_client_set_timeout(pdata->iiod_client,
-			EP_OPS, remote_timeout);
+			 (uintptr_t) &pdata->io_ctx, remote_timeout);
 	if (!ret)
 		pdata->timeout_ms = timeout;
 
@@ -365,6 +396,7 @@ static void usb_shutdown(struct iio_context *ctx)
 {
 	unsigned int i;
 
+	usb_io_context_exit(&ctx->pdata->io_ctx);
 	iio_mutex_destroy(ctx->pdata->lock);
 	iio_mutex_destroy(ctx->pdata->ep_lock);
 
@@ -377,6 +409,7 @@ static void usb_shutdown(struct iio_context *ctx)
 	for (i = 0; i < ctx->nb_devices; i++) {
 		struct iio_device *dev = ctx->devices[i];
 
+		usb_io_context_exit(&dev->pdata->io_ctx);
 		free(dev->pdata);
 	}
 
@@ -387,6 +420,17 @@ static void usb_shutdown(struct iio_context *ctx)
 	libusb_close(ctx->pdata->hdl);
 	libusb_exit(ctx->pdata->ctx);
 	free(ctx->pdata);
+}
+
+static void usb_cancel(const struct iio_device *dev)
+{
+	struct iio_device_pdata *ppdata = dev->pdata;
+
+	iio_mutex_lock(ppdata->io_ctx.lock);
+	if (ppdata->io_ctx.transfer)
+		libusb_cancel_transfer(ppdata->io_ctx.transfer);
+	ppdata->io_ctx.cancelled = true;
+	iio_mutex_unlock(ppdata->io_ctx.lock);
 }
 
 static const struct iio_backend_ops usb_ops = {
@@ -402,16 +446,115 @@ static const struct iio_backend_ops usb_ops = {
 	.set_kernel_buffers_count = usb_set_kernel_buffers_count,
 	.set_timeout = usb_set_timeout,
 	.shutdown = usb_shutdown,
+
+	.cancel = usb_cancel,
 };
 
+static void LIBUSB_CALL sync_transfer_cb(struct libusb_transfer *transfer)
+{
+	int *completed = transfer->user_data;
+	*completed = 1;
+}
+
+static int usb_sync_transfer(struct iio_context_pdata *pdata,
+	struct iio_usb_io_context *io_ctx, unsigned int ep_type,
+	char *data, size_t len, int *transferred)
+{
+	struct libusb_transfer *transfer;
+	int completed = 0;
+	int ret;
+
+	/*
+	 * For cancellation support the check whether the buffer has already been
+	 * cancelled and the allocation as well as the assignment of the new
+	 * transfer needs to happen in one atomic step. Otherwise it is possible
+	 * that the cancellation is missed and transfer is not aborted.
+	 */
+	iio_mutex_lock(io_ctx->lock);
+	if (io_ctx->cancelled) {
+		ret = -EBADF;
+		goto unlock;
+	}
+
+	transfer = libusb_alloc_transfer(0);
+	if (!transfer) {
+		ret = -ENOMEM;
+		goto unlock;
+	}
+
+	transfer->user_data = &completed;
+
+	libusb_fill_bulk_transfer(transfer, pdata->hdl, io_ctx->ep | ep_type,
+		(unsigned char *) data, (int) len,
+		sync_transfer_cb, &completed, pdata->timeout_ms);
+	transfer->type = LIBUSB_TRANSFER_TYPE_BULK;
+
+	ret = libusb_submit_transfer(transfer);
+	if (ret < 0) {
+		libusb_free_transfer(transfer);
+		goto unlock;
+	}
+
+	io_ctx->transfer = transfer;
+unlock:
+	iio_mutex_unlock(io_ctx->lock);
+	if (ret)
+		return ret;
+
+	while (!completed) {
+		ret = libusb_handle_events_completed(pdata->ctx, &completed);
+		if (ret < 0) {
+			if (ret == LIBUSB_ERROR_INTERRUPTED)
+				continue;
+			libusb_cancel_transfer(transfer);
+			continue;
+		}
+	}
+
+	switch (transfer->status) {
+	case LIBUSB_TRANSFER_COMPLETED:
+		*transferred = transfer->actual_length;
+		ret = 0;
+		break;
+	case LIBUSB_TRANSFER_TIMED_OUT:
+		ret = -ETIMEDOUT;
+		break;
+	case LIBUSB_TRANSFER_STALL:
+		ret = -EPIPE;
+		break;
+	case LIBUSB_TRANSFER_NO_DEVICE:
+		ret = -ENODEV;
+		break;
+	case LIBUSB_TRANSFER_OVERFLOW:
+		ret = -EIO;
+		break;
+	case LIBUSB_TRANSFER_ERROR:
+		ret = -EIO;
+		break;
+	case LIBUSB_TRANSFER_CANCELLED:
+		ret = -EBADF;
+		break;
+	default:
+		ret = -EIO;
+		break;
+	}
+
+	iio_mutex_lock(io_ctx->lock);
+	io_ctx->transfer = NULL;
+	iio_mutex_unlock(io_ctx->lock);
+
+	libusb_free_transfer(transfer);
+
+	return ret;
+}
+
 static ssize_t write_data_sync(struct iio_context_pdata *pdata,
-		int ep, const char *data, size_t len)
+		uintptr_t ep, const char *data, size_t len)
 {
 	int transferred, ret;
 
-	ret = libusb_bulk_transfer(pdata->hdl, ep | LIBUSB_ENDPOINT_OUT,
-			(unsigned char *) data, (int) len,
-			&transferred, pdata->timeout_ms);
+	ret = usb_sync_transfer(pdata, (void *)ep,
+		LIBUSB_ENDPOINT_OUT, (char *)data, len, &transferred);
 	if (ret)
 		return -(int) libusb_to_errno(ret);
 	else
@@ -419,12 +562,12 @@ static ssize_t write_data_sync(struct iio_context_pdata *pdata,
 }
 
 static ssize_t read_data_sync(struct iio_context_pdata *pdata,
-		int ep, char *buf, size_t len)
+		uintptr_t ep, char *data, size_t len)
 {
 	int transferred, ret;
 
-	ret = libusb_bulk_transfer(pdata->hdl, ep | LIBUSB_ENDPOINT_IN,
-			(unsigned char *) buf, (int) len, &transferred, pdata->timeout_ms);
+	ret = usb_sync_transfer(pdata, (void *)ep,
+		LIBUSB_ENDPOINT_IN, data, len, &transferred);;
 	if (ret)
 		return -(int) libusb_to_errno(ret);
 	else
@@ -586,21 +729,29 @@ struct iio_context * usb_create_context(unsigned short vid, unsigned short pid)
 	pdata->hdl = hdl;
 	pdata->timeout_ms = DEFAULT_TIMEOUT_MS;
 
+	ret = usb_io_context_init(&pdata->io_ctx);
+	if (ret)
+		goto err_free_endpoints;
+	pdata->io_ctx.ep = EP_OPS;
+
 	ret = usb_reset_pipes(hdl);
 	if (ret) {
 		iio_strerror(-ret, err_str, sizeof(err_str));
 		ERROR("Failed to reset pipes: %s\n", err_str);
-		return NULL;
+		ret = -EIO;
+		goto err_io_context_exit;
 	}
 
 	ret = usb_open_pipe(hdl, EP_OPS);
 	if (ret) {
 		iio_strerror(-ret, err_str, sizeof(err_str));
 		ERROR("Failed to open control pipe: %s\n", err_str);
-		return NULL;
+		ret = -EIO;
+		goto err_io_context_exit;
 	}
 
-	ctx = iiod_client_create_context(pdata->iiod_client, EP_OPS);
+	ctx = iiod_client_create_context(pdata->iiod_client,
+			(uintptr_t)&pdata->io_ctx);
 	if (!ctx)
 		goto err_reset_pipes;
 
@@ -619,6 +770,10 @@ struct iio_context * usb_create_context(unsigned short vid, unsigned short pid)
 			ret = -ENOMEM;
 			goto err_context_destroy;
 		}
+
+		ret = usb_io_context_init(&dev->pdata->io_ctx);
+		if (ret)
+			goto err_context_destroy;
 	}
 
 	return ctx;
@@ -630,6 +785,8 @@ err_context_destroy:
 
 err_reset_pipes:
 	usb_reset_pipes(hdl); /* Close everything */
+err_io_context_exit:
+	usb_io_context_exit(&pdata->io_ctx);
 err_free_endpoints:
 	for (i = 0; i < pdata->nb_io_endpoints; i++)
 		if (pdata->io_endpoints[i].lock)

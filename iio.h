@@ -1020,6 +1020,8 @@ __api ssize_t iio_buffer_push(struct iio_buffer *buf);
 __api ssize_t iio_buffer_push_partial(struct iio_buffer *buf,
 		size_t samples_count);
 
+__api void iio_buffer_cancel(struct iio_buffer *buf);
+
 
 /** @brief Get the start address of the buffer
  * @param buf A pointer to an iio_buffer structure
