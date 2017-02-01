@@ -470,7 +470,7 @@ static int iio_usb_match_device(struct libusb_device *dev,
 		unsigned int *interface)
 {
 	struct libusb_config_descriptor *desc;
-	unsigned int i;
+	unsigned int i, iface;
 	int ret;
 
 	ret = libusb_get_active_config_descriptor(dev, &desc);
@@ -485,11 +485,19 @@ static int iio_usb_match_device(struct libusb_device *dev,
 	if (ret < 0)
 		return ret;
 
+	iface = i - 1;
+
+	ret = libusb_claim_interface(hdl, iface);
+	if (ret)
+		return ret;
+
+	libusb_release_interface(hdl, iface);
+
 	DEBUG("Found IIO interface on device %u:%u using interface %u\n",
 			libusb_get_bus_number(dev),
-			libusb_get_device_address(dev), i - 1);
+			libusb_get_device_address(dev), iface);
 
-	*interface = i - 1;
+	*interface = iface;
 	return ret;
 }
 
