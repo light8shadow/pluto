@@ -428,6 +428,7 @@ static void usb_shutdown(struct iio_context *ctx)
 
 	usb_reset_pipes(ctx->pdata); /* Close everything */
 
+	libusb_release_interface(ctx->pdata->hdl, ctx->pdata->interface);
 	libusb_close(ctx->pdata->hdl);
 	libusb_exit(ctx->pdata->ctx);
 	free(ctx->pdata);
