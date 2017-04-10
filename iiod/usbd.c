@@ -38,7 +38,7 @@
 
 struct usb_ffs_header {
 	struct usb_functionfs_descs_head_v2 header;
-	uint32_t nb_fs, nb_hs, nb_ss;
+	uint32_t nb_fs, nb_hs/*, nb_ss*/;
 } __attribute__((packed));
 
 struct usb_ffs_strings {
@@ -247,16 +247,16 @@ static struct usb_ffs_header * create_header(
 	hdr->header.magic = LE32(FUNCTIONFS_DESCRIPTORS_MAGIC_V2);
 	hdr->header.length = htole32(size);
 	hdr->header.flags = LE32(FUNCTIONFS_HAS_FS_DESC |
-			FUNCTIONFS_HAS_HS_DESC |
-			FUNCTIONFS_HAS_SS_DESC);
+			FUNCTIONFS_HAS_HS_DESC/* |
+			FUNCTIONFS_HAS_SS_DESC*/);
 
 	hdr->nb_fs = htole32(nb_pipes * 2 + 1);
 	hdr->nb_hs = htole32(nb_pipes * 2 + 1);
-	hdr->nb_ss = htole32(nb_pipes * 2 + 1);
+/*	hdr->nb_ss = htole32(nb_pipes * 2 + 1); */
 
 	ptr = ((uintptr_t) hdr) + sizeof(*hdr);
 
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < /*3*/2; i++) {
 		struct usb_interface_descriptor *desc =
 			(struct usb_interface_descriptor *) ptr;
 		struct usb_endpoint_descriptor_no_audio *ep;
